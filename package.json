@@ -1,0 +1,58 @@
+{
+  "name": "dsh-geodesy",
+  "version": "0.1.0",
+  "description": "Geodesic math toolbox for DeepSeek Harness (dsh): great-circle distance, bearings, destination points, and DMS coordinate parsing — zero runtime dependencies",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "oxlint src test"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "geodesy",
+    "geo",
+    "distance",
+    "haversine",
+    "bearing",
+    "coordinates",
+    "dms"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TYEclipse/dsh-geodesy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TYEclipse/dsh-geodesy/issues"
+  },
+  "homepage": "https://github.com/TYEclipse/dsh-geodesy#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^24.13.3",
+    "oxlint": "^1.6.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
