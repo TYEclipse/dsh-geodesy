@@ -7,6 +7,9 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DISTANCE_UNITS, UNIT_FACTORS, compassPoint, destinationPoint, finalBearing, formatDms, haversineKm, initialBearing, midpointOf, round, validatePoint, } from "./geodesy.js";
+import { rhumbBearing, rhumbDistanceKm } from "./rhumb.js";
+import { greatCircleIntersection } from "./intersection.js";
+import { sphericalPolygonArea } from "./area.js";
 import { parseCoordInput } from "./coords.js";
 function renderDistance(value) {
     const result = value;
@@ -40,7 +43,37 @@ function renderCoord(value) {
         parts.push(`lon ${result.longitude} (${result.lonDms})`);
     return `"${result.input}" → ${parts.join(', ')}`;
 }
-/** Build all four tool definitions from the resolved config. */
+function renderRhumb(value) {
+    const result = value;
+    if (!result.valid)
+        return `invalid input: ${result.reason ?? 'unknown error'}`;
+    let text = `${result.distance} ${result.unit} along a constant heading of ${result.bearing}° (${result.compass})`
+        + ` — great-circle distance ${result.greatCircleKm} km`;
+    if (result.note !== undefined)
+        text += ` — ${result.note}`;
+    return text;
+}
+function renderIntersection(value) {
+    const result = value;
+    if (!result.valid)
+        return `invalid input: ${result.reason ?? 'unknown error'}`;
+    let text = `crossing: ${result.lat}, ${result.lon} — ${result.distanceFromStart1Km} km from start 1, `
+        + `${result.distanceFromStart2Km} km from start 2; antipodal crossing ${result.antipodeLat}, ${result.antipodeLon}`;
+    if (result.note !== undefined)
+        text += ` — ${result.note}`;
+    return text;
+}
+function renderArea(value) {
+    const result = value;
+    if (!result.valid)
+        return `invalid input: ${result.reason ?? 'unknown error'}`;
+    let text = `${result.vertices}-vertex polygon: area ${result.areaKm2} km², perimeter ${result.perimeterKm} km`
+        + ` — complementary region ${result.complementKm2} km²`;
+    if (result.note !== undefined)
+        text += ` — ${result.note}`;
+    return text;
+}
+/** Build all seven tool definitions from the resolved config. */
 export function buildGeodesyTools(config) {
     const radiusKm = config.radiusKm;
     const maxDistanceKm = Math.PI * radiusKm;
@@ -264,6 +297,198 @@ export function buildGeodesyTools(config) {
             };
         },
     });
-    return { geo_distance, geo_bearing, geo_destination, coord_parse };
+    const geo_rhumb = defineTool({
+        name: 'geo_rhumb',
+        description: 'Compute the rhumb-line (constant-heading) distance and bearing between two decimal-degree points, '
+            + 'plus the great-circle distance for comparison. Unlike a great circle, a rhumb line keeps the same compass '
+            + 'heading the whole way (longer than the great circle except along meridians and the equator). Useful for '
+            + 'navigation at constant heading and for comparing the two distance models. Never compute loxodrome distances '
+            + 'by hand — use this instead.',
+        parameters: {
+            lat1: { type: 'number', required: true, description: 'Latitude of the first point, -90 to 90.' },
+            lon1: { type: 'number', required: true, description: 'Longitude of the first point, -180 to 180.' },
+            lat2: { type: 'number', required: true, description: 'Latitude of the second point, -90 to 90.' },
+            lon2: { type: 'number', required: true, description: 'Longitude of the second point, -180 to 180.' },
+            unit: { type: 'string', enum: [...DISTANCE_UNITS], description: 'Distance unit (default km).' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    unit: { type: 'string' },
+                    distance: { type: 'number' },
+                    kilometers: { type: 'number' },
+                    miles: { type: 'number' },
+                    nauticalMiles: { type: 'number' },
+                    bearing: { type: 'number' },
+                    compass: { type: 'string' },
+                    greatCircleKm: { type: 'number' },
+                    note: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderRhumb(value) }],
+        },
+        async execute(args) {
+            const unit = args.unit ?? 'km';
+            if (UNIT_FACTORS[unit] === undefined) {
+                return { valid: false, reason: `unsupported unit "${unit}" (expected km, m, mi or nmi)` };
+            }
+            const reason = validatePoint(args.lat1, args.lon1) ?? validatePoint(args.lat2, args.lon2);
+            if (reason !== undefined)
+                return { valid: false, reason };
+            const a = { lat: args.lat1, lon: args.lon1 };
+            const b = { lat: args.lat2, lon: args.lon2 };
+            const km = rhumbDistanceKm(a, b, radiusKm);
+            const factor = UNIT_FACTORS[unit] ?? 1;
+            const bearing = rhumbBearing(a, b);
+            const result = {
+                valid: true,
+                unit,
+                distance: round(km * factor),
+                kilometers: round(km),
+                miles: round(km / 1.609344),
+                nauticalMiles: round(km / 1.852),
+                bearing: round(bearing),
+                compass: compassPoint(bearing),
+                greatCircleKm: round(haversineKm(a, b, radiusKm)),
+            };
+            if (km < 1e-9) {
+                result.note = 'points coincide — no unique constant heading exists (bearing reported as 0)';
+            }
+            return result;
+        },
+    });
+    const geo_intersection = defineTool({
+        name: 'geo_intersection',
+        description: 'Find where two great-circle paths cross: give two start points and the initial bearing of each '
+            + 'path (degrees, 0 = north, 90 = east). Any two distinct great circles on a sphere cross at exactly two '
+            + 'antipodal points; the result reports the crossing nearest to the first path\'s start plus the antipodal '
+            + 'crossing, with distances from both starts. Useful for "where do these two routes/flight corridors cross". '
+            + 'Coincident paths are reported as an error. Never solve spherical intersections by hand — use this instead.',
+        parameters: {
+            lat1: { type: 'number', required: true, description: 'Latitude of the first path\'s start, -90 to 90.' },
+            lon1: { type: 'number', required: true, description: 'Longitude of the first path\'s start, -180 to 180.' },
+            bearing1: { type: 'number', required: true, description: 'Initial bearing of the first path, 0 to 360.' },
+            lat2: { type: 'number', required: true, description: 'Latitude of the second path\'s start, -90 to 90.' },
+            lon2: { type: 'number', required: true, description: 'Longitude of the second path\'s start, -180 to 180.' },
+            bearing2: { type: 'number', required: true, description: 'Initial bearing of the second path, 0 to 360.' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    lat: { type: 'number' },
+                    lon: { type: 'number' },
+                    distanceFromStart1Km: { type: 'number' },
+                    distanceFromStart2Km: { type: 'number' },
+                    antipodeLat: { type: 'number' },
+                    antipodeLon: { type: 'number' },
+                    antipodeDistanceFromStart1Km: { type: 'number' },
+                    antipodeDistanceFromStart2Km: { type: 'number' },
+                    note: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderIntersection(value) }],
+        },
+        async execute(args) {
+            const reason = validatePoint(args.lat1, args.lon1) ?? validatePoint(args.lat2, args.lon2);
+            if (reason !== undefined)
+                return { valid: false, reason };
+            for (const [name, brng] of [['bearing1', args.bearing1], ['bearing2', args.bearing2]]) {
+                if (!Number.isFinite(brng) || brng < 0 || brng >= 360) {
+                    return { valid: false, reason: `${name} ${brng} is out of range [0, 360)` };
+                }
+            }
+            const outcome = greatCircleIntersection({ lat: args.lat1, lon: args.lon1 }, args.bearing1, { lat: args.lat2, lon: args.lon2 }, args.bearing2, radiusKm);
+            if (outcome.error !== undefined)
+                return { valid: false, reason: outcome.error };
+            const r = outcome.result;
+            const result = {
+                valid: true,
+                lat: round(r.point.lat),
+                lon: round(r.point.lon),
+                distanceFromStart1Km: round(r.point.distanceFromStart1Km),
+                distanceFromStart2Km: round(r.point.distanceFromStart2Km),
+                antipodeLat: round(r.antipode.lat),
+                antipodeLon: round(r.antipode.lon),
+                antipodeDistanceFromStart1Km: round(r.antipode.distanceFromStart1Km),
+                antipodeDistanceFromStart2Km: round(r.antipode.distanceFromStart2Km),
+            };
+            if (r.behindStart1) {
+                result.note = 'the nearest crossing lies on the reverse side of path 1 (its bearing from start 1 differs by ~180°) — the antipodal crossing is the one ahead along the given bearing';
+            }
+            return result;
+        },
+    });
+    const geo_area = defineTool({
+        name: 'geo_area',
+        description: 'Compute the area and perimeter of a spherical polygon on the sphere from its vertices, given as '
+            + 'an ordered list of {lat, lon} pairs along the boundary (3 to 100 vertices, no consecutive duplicate or '
+            + 'antipodal vertices). The reported area is the region to the LEFT of the directed edges — with '
+            + 'counter-clockwise vertex order (seen from outside the sphere) that is the polygon itself; with clockwise '
+            + 'order it is the complement of the polygon. A complementKm2 value is always included, so either region is '
+            + 'available regardless of winding. Assumes a simple (non-self-intersecting) polygon. Never estimate '
+            + 'spherical polygon areas by hand — use this instead.',
+        parameters: {
+            points: {
+                type: 'array',
+                required: true,
+                description: 'Ordered boundary vertices as {lat, lon} objects (at least 3, at most 100).',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+                        lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+                    },
+                },
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    vertices: { type: 'number' },
+                    areaKm2: { type: 'number' },
+                    perimeterKm: { type: 'number' },
+                    excessRadians: { type: 'number' },
+                    complementKm2: { type: 'number' },
+                    note: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderArea(value) }],
+        },
+        async execute(args) {
+            if (!Array.isArray(args.points)) {
+                return { valid: false, reason: 'points must be an array of {lat, lon} objects' };
+            }
+            const outcome = sphericalPolygonArea(args.points, radiusKm);
+            if (outcome.error !== undefined)
+                return { valid: false, reason: outcome.error };
+            const info = outcome.result;
+            const result = {
+                valid: true,
+                vertices: args.points.length,
+                areaKm2: round(info.areaKm2),
+                perimeterKm: round(info.perimeterKm),
+                excessRadians: round(info.excessRadians, 10),
+                complementKm2: round(info.complementKm2),
+            };
+            if (info.excessRadians > 2 * Math.PI) {
+                result.note = 'the left region covers more than a hemisphere — the vertices may be wound clockwise; complementKm2 holds the polygon area in that case';
+            }
+            return result;
+        },
+    });
+    return { geo_distance, geo_bearing, geo_destination, coord_parse, geo_rhumb, geo_intersection, geo_area };
 }
 //# sourceMappingURL=tools.js.map
