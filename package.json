@@ -1,7 +1,7 @@
 {
   "name": "dsh-geodesy",
-  "version": "0.1.0",
-  "description": "Geodesic math toolbox for DeepSeek Harness (dsh): great-circle distance, bearings, destination points, and DMS coordinate parsing — zero runtime dependencies",
+  "version": "0.2.0",
+  "description": "Geodesic math toolbox for DeepSeek Harness (dsh): great-circle distance, bearings, destination points, DMS parsing, rhumb lines, path intersections, and spherical polygon areas — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

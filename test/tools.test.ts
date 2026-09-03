@@ -185,8 +185,16 @@ describe('coord_parse', () => {
 })
 
 describe('tool surface', () => {
-  it('exposes exactly four tools with stable names', () => {
-    expect(Object.keys(tools).sort()).toEqual(['coord_parse', 'geo_bearing', 'geo_destination', 'geo_distance'])
+  it('exposes exactly seven tools with stable names', () => {
+    expect(Object.keys(tools).sort()).toEqual([
+      'coord_parse',
+      'geo_area',
+      'geo_bearing',
+      'geo_destination',
+      'geo_distance',
+      'geo_intersection',
+      'geo_rhumb',
+    ])
   })
 
   it('declares a cordis patch id matching the plugin name convention', async () => {
