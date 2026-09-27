@@ -1,14 +1,16 @@
 /**
  * dsh-geodesy — geodesic math toolbox for DeepSeek Harness.
  *
- * Seven pure-computation tools, zero runtime dependencies:
- *   geo_distance     — great-circle distance with bearings and compass direction
- *   geo_bearing      — initial/final bearings + great-circle midpoint
- *   geo_destination  — direct problem: point at a bearing and distance
- *   coord_parse      — parse/validate decimal & DMS coordinate strings
- *   geo_rhumb        — constant-heading (rhumb-line) distance and bearing
- *   geo_intersection — crossing of two great-circle paths (+ antipodal crossing)
- *   geo_area         — spherical polygon area and perimeter (spherical excess)
+ * Nine pure-computation tools, zero runtime dependencies:
+ *   geo_distance       — great-circle distance with bearings and compass direction
+ *   geo_bearing        — initial/final bearings + great-circle midpoint
+ *   geo_destination    — direct problem: point at a bearing and distance
+ *   coord_parse        — parse/validate decimal & DMS coordinate strings
+ *   geo_rhumb          — constant-heading (rhumb-line) distance and bearing
+ *   geo_intersection   — crossing of two great-circle paths (+ antipodal crossing)
+ *   geo_area           — spherical polygon area and perimeter (spherical excess)
+ *   geo_cross_track    — distance from a point to a great-circle path (off-track)
+ *   geo_point_in_polygon — is this coordinate inside this spherical polygon?
  *
  * All math is spherical trigonometry on a configurable-radius sphere
  * (default IUGG mean Earth radius 6371.0088 km). No network I/O.

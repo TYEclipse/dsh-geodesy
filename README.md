@@ -1,8 +1,8 @@
 # dsh-geodesy
 
-Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, and spherical polygon areas — all as local, deterministic tools with **zero runtime dependencies**.
+Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances and point-in-polygon tests — all as local, deterministic tools with **zero runtime dependencies**.
 
-> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积共七个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算等）。
+> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内，共九个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈等）。
 
 ## Why
 
@@ -15,6 +15,8 @@ LLMs reliably fumble geodesic math: they mix up latitude/longitude order, use th
 - `geo_rhumb` — rhumb-line (constant-heading / loxodrome) distance and bearing between two points, with the great-circle distance for comparison
 - `geo_intersection` — where two great-circle paths (start point + initial bearing each) cross; reports the nearest crossing, the antipodal crossing, and distances from both starts
 - `geo_area` — area and perimeter of a spherical polygon via spherical excess (Girard's theorem), with the complementary region's area always included
+- `geo_cross_track` — how far a point is off a great-circle path: signed cross-track distance, along-track distance to the perpendicular foot, the foot's coordinates, whether the foot is between the path endpoints, and the distance to the nearest point of the segment
+- `geo_point_in_polygon` — is a coordinate inside a spherical polygon? Reports both sides of the boundary (the enclosed region and the region left of the directed edges), boundary hits, and the area of the region the point falls in
 
 All math uses the IUGG mean Earth radius 6371.0088 km (configurable via the plugin `radiusKm` option, e.g. for lunar or planetary calculations).
 
@@ -37,6 +39,9 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 - "How far do I sail from (45°N, 0°) to (45°N, 90°) at a constant heading, and how much longer is that than the great circle?"
 - "Where does the flight corridor starting at (0, 0) heading due east cross the one starting at (0, 90) heading due north?"
 - "What is the area of the triangle (0,0), (0,90), (90,0) on the sphere?"
+- "I'm steaming from (0,0) to (0,10) — how far off track am I at (1,5), and where do I rejoin?"
+- "Is (45, 45) inside the spherical triangle (0,0), (0,90), (90,0)?"
+- "This 0.2° box sits at the antimeridian — is (0, 0) inside it?" (the antipode trap: a naive angle-sum test says yes, it is not)
 
 ### Examples
 
@@ -85,6 +90,40 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 }
 ```
 
+`geo_cross_track` — the query point (1, 5) against the equator path (0,0) → (0,10):
+
+```json
+{
+  "valid": true,
+  "side": "left",
+  "crossTrackKm": 111.19508,
+  "distanceToPathKm": 111.19508,
+  "alongTrackKm": 555.975401,
+  "footLat": 0,
+  "footLon": 5,
+  "withinSegment": true,
+  "distanceToSegmentKm": 111.19508,
+  "pathLengthKm": 1111.950802,
+  "trackBearing": 90,
+  "bearingToFoot": 180
+}
+```
+
+`geo_point_in_polygon` — (45, 45) against the octant triangle (0,0), (0,90), (90,0):
+
+```json
+{
+  "valid": true,
+  "insideEnclosed": true,
+  "insideLeftRegion": true,
+  "onBoundary": false,
+  "vertices": 3,
+  "areaKm2": 63758235.121609,
+  "complementKm2": 446307645.851263,
+  "regionAreaKm2": 63758235.121609
+}
+```
+
 `geo_distance` — Beijing (39.9042, 116.4074) → Shanghai (31.2304, 121.4737):
 
 ```json
@@ -104,6 +143,11 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 ## Semantics notes
 
 - **`geo_area` winding**: the reported area is the region to the LEFT of the directed edges. Counter-clockwise vertex order (seen from outside the sphere) yields the polygon itself; clockwise order yields its complement. `complementKm2` is always included, so either region is one field away. The polygon must be simple (non-self-intersecting); at most 100 vertices.
+- **`geo_point_in_polygon`** reports both sides of the boundary, because a boundary on a sphere always has two:
+  - `insideEnclosed` — the ordinary "is the point inside the polygon". The enclosed region is taken to be the smaller of the two regions the boundary splits the sphere into, so a clockwise-wound square still means its interior.
+  - `insideLeftRegion` — the region to the LEFT of the directed edges, i.e. exactly the region `geo_area` calls `areaKm2`. With counter-clockwise vertex order the two answers agree; with clockwise order they are opposites (a `note` says so).
+  - Points within ~6 mm of an edge (floating-point tolerance) are `onBoundary: true` and in neither region. The method is a signed great-circle ray-crossing winding, which — unlike the popular "sum the angles at the query point" shortcut — does not report points near a polygon's antipode as inside.
+- **`geo_cross_track`** sign conventions: `crossTrackKm` is positive when the query point is to the LEFT of the direction of travel (right-hand rule, seen from outside the sphere); `alongTrackKm` is positive when the perpendicular foot lies ahead of the path start and negative when it lies behind. When the foot falls outside the segment, `withinSegment: false` and `distanceToSegmentKm` is the distance to the nearer endpoint — not the perpendicular distance (a `note` says so). A point exactly 90° off the path has no unique foot and is reported as an error.
 - **`geo_intersection`** reports the crossing nearest to the first path's start; when that crossing lies on the reverse side of path 1 (bearing from start 1 differs by ~180°), a `note` says so and the antipodal crossing is the one ahead.
 - **`geo_rhumb`** returns bearing 0 for zero-length lines (no unique heading exists).
 
@@ -133,6 +177,8 @@ Invalid input returns `valid: false` with a reason — never a silent guess.
 | `geo_rhumb` | constant-heading distance + bearing (loxodrome), great-circle comparison |
 | `geo_intersection` | crossing of two great-circle paths (+ antipodal crossing, distances from starts) |
 | `geo_area` | spherical polygon area + perimeter (spherical excess), complement area |
+| `geo_cross_track` | off-track distance to a great-circle path: signed cross-track + along-track, foot, segment distance |
+| `geo_point_in_polygon` | inside/outside test for a spherical polygon (both sides, boundary hits, region area) |
 
 ## Configuration
 
@@ -147,7 +193,7 @@ plugins:
 ```sh
 pnpm install
 pnpm build
-pnpm test     # 154 tests, anchored to independently computed closed-form values
+pnpm test     # 187 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
 pnpm lint
 ```
 

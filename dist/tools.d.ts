@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: four pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: nine pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -15,6 +15,8 @@ export interface ToolSet {
     geo_rhumb: ToolDefinition;
     geo_intersection: ToolDefinition;
     geo_area: ToolDefinition;
+    geo_cross_track: ToolDefinition;
+    geo_point_in_polygon: ToolDefinition;
 }
 /** Full output of geo_distance: success keys always present, `reason` only on failure. */
 export interface DistanceResult {
@@ -98,6 +100,36 @@ export interface AreaToolResult {
     note?: string;
     reason?: string;
 }
-/** Build all seven tool definitions from the resolved config. */
+/** Full output of geo_cross_track. */
+export interface CrossTrackToolResult {
+    valid: boolean;
+    side?: string;
+    crossTrackKm?: number;
+    distanceToPathKm?: number;
+    alongTrackKm?: number;
+    footLat?: number;
+    footLon?: number;
+    withinSegment?: boolean;
+    distanceToSegmentKm?: number;
+    pathLengthKm?: number;
+    trackBearing?: number;
+    bearingToFoot?: number;
+    note?: string;
+    reason?: string;
+}
+/** Full output of geo_point_in_polygon. */
+export interface PointInPolygonToolResult {
+    valid: boolean;
+    insideEnclosed?: boolean;
+    insideLeftRegion?: boolean;
+    onBoundary?: boolean;
+    vertices?: number;
+    areaKm2?: number;
+    complementKm2?: number;
+    regionAreaKm2?: number;
+    note?: string;
+    reason?: string;
+}
+/** Build all nine tool definitions from the resolved config. */
 export declare function buildGeodesyTools(config: ResolvedConfig): ToolSet;
 //# sourceMappingURL=tools.d.ts.map

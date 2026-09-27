@@ -1,7 +1,12 @@
 /**
- * Tool-definition tests for dsh-geodesy: execute() behaviour for all four
- * tools, including the valid:false branches. Anchored numeric values come
- * from the independent anchor script (test/anchors.py).
+ * Tool-definition tests for dsh-geodesy: execute() behaviour for the four
+ * original tools, including the valid:false branches. Anchored numeric values
+ * come from the independent anchor script.
+ *
+ * ORACLE: test/anchors.py — the v0.1/v0.2 anchors quoted throughout this file
+ * (great-circle, bearings, DMS, rhumb) are printed by that script. The v0.3.0
+ * cross-track and point-in-polygon anchors live in test/oracle/anchors.py and
+ * are asserted in test/path.test.ts and test/region.test.ts.
  */
 import { describe, expect, it } from 'vitest'
 import { resolveConfig } from '../src/index.ts'
@@ -185,14 +190,16 @@ describe('coord_parse', () => {
 })
 
 describe('tool surface', () => {
-  it('exposes exactly seven tools with stable names', () => {
+  it('exposes exactly nine tools with stable names', () => {
     expect(Object.keys(tools).sort()).toEqual([
       'coord_parse',
       'geo_area',
       'geo_bearing',
+      'geo_cross_track',
       'geo_destination',
       'geo_distance',
       'geo_intersection',
+      'geo_point_in_polygon',
       'geo_rhumb',
     ])
   })

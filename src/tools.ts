@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: four pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: nine pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -23,6 +23,8 @@ import {
 import { rhumbBearing, rhumbDistanceKm } from './rhumb.ts'
 import { greatCircleIntersection } from './intersection.ts'
 import { sphericalPolygonArea } from './area.ts'
+import { crossTrack } from './path.ts'
+import { pointInPolygon } from './region.ts'
 import { parseCoordInput, type CoordKind } from './coords.ts'
 import type { ResolvedConfig } from './index.ts'
 
@@ -34,6 +36,8 @@ export interface ToolSet {
   geo_rhumb: ToolDefinition
   geo_intersection: ToolDefinition
   geo_area: ToolDefinition
+  geo_cross_track: ToolDefinition
+  geo_point_in_polygon: ToolDefinition
 }
 
 /** Full output of geo_distance: success keys always present, `reason` only on failure. */
@@ -125,6 +129,38 @@ export interface AreaToolResult {
   reason?: string
 }
 
+/** Full output of geo_cross_track. */
+export interface CrossTrackToolResult {
+  valid: boolean
+  side?: string
+  crossTrackKm?: number
+  distanceToPathKm?: number
+  alongTrackKm?: number
+  footLat?: number
+  footLon?: number
+  withinSegment?: boolean
+  distanceToSegmentKm?: number
+  pathLengthKm?: number
+  trackBearing?: number
+  bearingToFoot?: number
+  note?: string
+  reason?: string
+}
+
+/** Full output of geo_point_in_polygon. */
+export interface PointInPolygonToolResult {
+  valid: boolean
+  insideEnclosed?: boolean
+  insideLeftRegion?: boolean
+  onBoundary?: boolean
+  vertices?: number
+  areaKm2?: number
+  complementKm2?: number
+  regionAreaKm2?: number
+  note?: string
+  reason?: string
+}
+
 function renderDistance(value: unknown): string {
   const result = value as DistanceResult
   if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
@@ -182,7 +218,37 @@ function renderArea(value: unknown): string {
   return text
 }
 
-/** Build all seven tool definitions from the resolved config. */
+function renderCrossTrack(value: unknown): string {
+  const result = value as CrossTrackToolResult
+  if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
+  let text = `${result.distanceToPathKm} km ${result.side} of the path (signed cross-track`
+    + ` ${result.crossTrackKm} km) — perpendicular foot ${result.footLat}, ${result.footLon},`
+    + ` ${result.alongTrackKm} km along the ${result.pathLengthKm} km path`
+    + ` (${result.withinSegment ? 'within the segment' : 'beyond the segment'})`
+    + `; nearest point of the segment is ${result.distanceToSegmentKm} km away,`
+    + ` bearing ${result.bearingToFoot}° from the query point`
+  if (result.note !== undefined) text += ` — ${result.note}`
+  return text
+}
+
+function renderPointInPolygon(value: unknown): string {
+  const result = value as PointInPolygonToolResult
+  if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
+  const where = result.onBoundary
+    ? 'on the boundary'
+    : result.insideEnclosed
+      ? 'inside the polygon'
+      : result.insideLeftRegion
+        ? 'outside the polygon (in the left-of-edges complement region)'
+        : 'outside the polygon'
+  let text = `point is ${where} — ${result.vertices}-vertex polygon, left-region area`
+    + ` ${result.areaKm2} km², complement ${result.complementKm2} km²`
+  if (result.regionAreaKm2 !== undefined) text += `, containing region ${result.regionAreaKm2} km²`
+  if (result.note !== undefined) text += ` — ${result.note}`
+  return text
+}
+
+/** Build all nine tool definitions from the resolved config. */
 export function buildGeodesyTools(config: ResolvedConfig): ToolSet {
   const radiusKm = config.radiusKm
   const maxDistanceKm = Math.PI * radiusKm
@@ -608,5 +674,165 @@ export function buildGeodesyTools(config: ResolvedConfig): ToolSet {
     },
   })
 
-  return { geo_distance, geo_bearing, geo_destination, coord_parse, geo_rhumb, geo_intersection, geo_area }
+  const geo_cross_track = defineTool({
+    name: 'geo_cross_track',
+    description: 'Measure a point against a great-circle path. Give the path start (lat1/lon1) and end '
+      + '(lat2/lon2) plus the query point (lat3/lon3) and get the signed cross-track distance (positive when '
+      + 'the point lies to the LEFT of the direction of travel), the signed along-track distance from the '
+      + 'start to the perpendicular foot, the foot coordinates, whether the foot falls between the two path '
+      + 'endpoints, and the distance to the nearest point of the segment. Use it for "how far off route is '
+      + 'this point", "where do I rejoin the track", and "which endpoint is it closest to". All distances are '
+      + `km on a sphere of radius ${radiusKm} km. Never estimate off-track distances by hand — use this instead.`,
+    parameters: {
+      lat1: { type: 'number', required: true, description: 'Latitude of the path start, -90 to 90.' },
+      lon1: { type: 'number', required: true, description: 'Longitude of the path start, -180 to 180.' },
+      lat2: { type: 'number', required: true, description: 'Latitude of the path end, -90 to 90.' },
+      lon2: { type: 'number', required: true, description: 'Longitude of the path end, -180 to 180.' },
+      lat3: { type: 'number', required: true, description: 'Latitude of the query point (the one being measured), -90 to 90.' },
+      lon3: { type: 'number', required: true, description: 'Longitude of the query point, -180 to 180.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          side: { type: 'string' },
+          crossTrackKm: { type: 'number' },
+          distanceToPathKm: { type: 'number' },
+          alongTrackKm: { type: 'number' },
+          footLat: { type: 'number' },
+          footLon: { type: 'number' },
+          withinSegment: { type: 'boolean' },
+          distanceToSegmentKm: { type: 'number' },
+          pathLengthKm: { type: 'number' },
+          trackBearing: { type: 'number' },
+          bearingToFoot: { type: 'number' },
+          note: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+      render: (_args: { lat1: number; lon1: number; lat2: number; lon2: number; lat3: number; lon3: number }, value: unknown) =>
+        [{ type: 'text', text: renderCrossTrack(value) }],
+    },
+    async execute(args: { lat1: number; lon1: number; lat2: number; lon2: number; lat3: number; lon3: number }): Promise<CrossTrackToolResult> {
+      const reason = validatePoint(args.lat1, args.lon1) ?? validatePoint(args.lat2, args.lon2)
+        ?? validatePoint(args.lat3, args.lon3)
+      if (reason !== undefined) return { valid: false, reason }
+      const p1 = { lat: args.lat1, lon: args.lon1 }
+      const p2 = { lat: args.lat2, lon: args.lon2 }
+      const p3 = { lat: args.lat3, lon: args.lon3 }
+      const outcome = crossTrack(p1, p2, p3, radiusKm)
+      if (outcome.error !== undefined) return { valid: false, reason: outcome.error }
+      const info = outcome.result!
+      const result: CrossTrackToolResult = {
+        valid: true,
+        side: Math.abs(info.crossTrackKm) <= 1e-9 ? 'on track' : info.crossTrackKm > 0 ? 'left' : 'right',
+        crossTrackKm: round(info.crossTrackKm),
+        distanceToPathKm: round(Math.abs(info.crossTrackKm)),
+        alongTrackKm: round(info.alongTrackKm),
+        footLat: round(info.foot.lat),
+        footLon: round(info.foot.lon),
+        withinSegment: info.withinSegment,
+        distanceToSegmentKm: round(info.distanceToSegmentKm),
+        pathLengthKm: round(info.pathLengthKm),
+        trackBearing: round(initialBearing(p1, p2)),
+        bearingToFoot: round(initialBearing(p3, info.foot)),
+      }
+      if (!info.withinSegment) {
+        result.note = 'the perpendicular foot lies outside the path segment — distanceToSegmentKm is the '
+          + 'distance to the nearer path endpoint, not the perpendicular distance'
+      }
+      return result
+    },
+  })
+
+  const geo_point_in_polygon = defineTool({
+    name: 'geo_point_in_polygon',
+    description: 'Test whether a coordinate lies inside a spherical polygon. Give the boundary vertices as an '
+      + 'ordered list of {lat, lon} objects (3 to 100, no consecutive duplicate or antipodal vertices — the '
+      + 'same format and winding convention as geo_area) plus the query point (lat/lon). Reports '
+      + 'insideEnclosed (the ordinary "inside the polygon" answer), insideLeftRegion (the region to the LEFT '
+      + 'of the directed edges — the region geo_area reports as areaKm2; with clockwise vertex order the two '
+      + 'answers are opposite), onBoundary when the point sits on an edge, and the area of the region the '
+      + 'point falls in. Use it for "is this coordinate inside this region" and "which side of the border is '
+      + 'this point". Never judge point-in-polygon on a sphere by eye — use this instead.',
+    parameters: {
+      points: {
+        type: 'array',
+        required: true,
+        description: 'Ordered boundary vertices as {lat, lon} objects (at least 3, at most 100).',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+            lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+          },
+        },
+      },
+      lat: { type: 'number', required: true, description: 'Latitude of the query point, -90 to 90.' },
+      lon: { type: 'number', required: true, description: 'Longitude of the query point, -180 to 180.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          insideEnclosed: { type: 'boolean' },
+          insideLeftRegion: { type: 'boolean' },
+          onBoundary: { type: 'boolean' },
+          vertices: { type: 'number' },
+          areaKm2: { type: 'number' },
+          complementKm2: { type: 'number' },
+          regionAreaKm2: { type: 'number' },
+          note: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+      render: (_args: { points: Array<{ lat: number; lon: number }>; lat: number; lon: number }, value: unknown) =>
+        [{ type: 'text', text: renderPointInPolygon(value) }],
+    },
+    async execute(args: { points: Array<{ lat: number; lon: number }>; lat: number; lon: number }): Promise<PointInPolygonToolResult> {
+      if (!Array.isArray(args.points)) {
+        return { valid: false, reason: 'points must be an array of {lat, lon} objects' }
+      }
+      const pointReason = validatePoint(args.lat, args.lon)
+      if (pointReason !== undefined) return { valid: false, reason: pointReason }
+      const outcome = pointInPolygon(args.points, { lat: args.lat, lon: args.lon }, radiusKm)
+      if (outcome.error !== undefined) return { valid: false, reason: outcome.error }
+      const info = outcome.result!
+      const result: PointInPolygonToolResult = {
+        valid: true,
+        insideEnclosed: info.insideEnclosed,
+        insideLeftRegion: info.insideLeftRegion,
+        onBoundary: info.onBoundary,
+        vertices: args.points.length,
+        areaKm2: round(info.areaKm2),
+        complementKm2: round(info.complementKm2),
+      }
+      if (!info.onBoundary) {
+        result.regionAreaKm2 = round(info.insideLeftRegion ? info.areaKm2 : info.complementKm2)
+      }
+      if (!info.leftIsEnclosed) {
+        result.note = 'clockwise vertex order: the left-of-edges region is the complement, so insideEnclosed '
+          + 'is the region bounded by the polygon while insideLeftRegion is everything outside it — reverse '
+          + 'the vertex order to swap the two'
+      }
+      return result
+    },
+  })
+
+  return {
+    geo_distance,
+    geo_bearing,
+    geo_destination,
+    coord_parse,
+    geo_rhumb,
+    geo_intersection,
+    geo_area,
+    geo_cross_track,
+    geo_point_in_polygon,
+  }
 }
