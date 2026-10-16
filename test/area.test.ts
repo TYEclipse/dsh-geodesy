@@ -1,7 +1,9 @@
 /**
  * Spherical polygon area tests. Anchors from the independent vector oracle
- * test/anchors_v2.py: the octant triangle is exact (E = pi/2), and small
+ * test/oracle/anchors.py: the octant triangle is exact (E = pi/2), and small
  * polygons are cross-checked against the planar shoelace limit.
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_RADIUS_KM } from '../src/geodesy.ts'

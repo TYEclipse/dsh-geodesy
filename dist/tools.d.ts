@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: nine pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: eleven pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -17,6 +17,8 @@ export interface ToolSet {
     geo_area: ToolDefinition;
     geo_cross_track: ToolDefinition;
     geo_point_in_polygon: ToolDefinition;
+    geo_path: ToolDefinition;
+    geo_circle: ToolDefinition;
 }
 /** Full output of geo_distance: success keys always present, `reason` only on failure. */
 export interface DistanceResult {
@@ -130,6 +132,57 @@ export interface PointInPolygonToolResult {
     note?: string;
     reason?: string;
 }
-/** Build all nine tool definitions from the resolved config. */
+/** One leg of a geo_path route, as reported to the agent. */
+export interface PathLegResult {
+    leg: number;
+    fromIndex: number;
+    toIndex: number;
+    distanceKm: number;
+    cumulativeKm: number;
+    initialBearing?: number;
+    compass?: string;
+}
+/** Full output of geo_path. */
+export interface PathToolResult {
+    valid: boolean;
+    points?: number;
+    legs?: PathLegResult[];
+    totalKm?: number;
+    straightKm?: number;
+    detourKm?: number;
+    detourPercent?: number;
+    closureKm?: number;
+    closesLoop?: boolean;
+    maxLegKm?: number;
+    minLegKm?: number;
+    zeroLengthLegs?: number[];
+    note?: string;
+    reason?: string;
+}
+/** Full output of geo_circle. */
+export interface CircleToolResult {
+    valid: boolean;
+    angularRadiusDeg?: number;
+    areaKm2?: number;
+    surfaceFraction?: number;
+    boundaryKm?: number;
+    boundaryIsGreatCircle?: boolean;
+    minLat?: number;
+    maxLat?: number;
+    minLon?: number;
+    maxLon?: number;
+    lonSpanDeg?: number;
+    crossesAntimeridian?: boolean;
+    coversAllLongitudes?: boolean;
+    includesNorthPole?: boolean;
+    includesSouthPole?: boolean;
+    coversWholeSphere?: boolean;
+    pointDistanceKm?: number;
+    containsPoint?: boolean;
+    pointOnBoundary?: boolean;
+    note?: string;
+    reason?: string;
+}
+/** Build all eleven tool definitions from the resolved config. */
 export declare function buildGeodesyTools(config: ResolvedConfig): ToolSet;
 //# sourceMappingURL=tools.d.ts.map

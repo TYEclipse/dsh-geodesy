@@ -1,7 +1,7 @@
 {
   "name": "dsh-geodesy",
-  "version": "0.3.0",
-  "description": "Geodesic math toolbox for DeepSeek Harness (dsh): great-circle distance, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances and point-in-polygon tests — zero runtime dependencies",
+  "version": "0.4.0",
+  "description": "Geodesic math toolbox for DeepSeek Harness (dsh): great-circle distance, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals and spherical caps (coverage areas) — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,7 +28,9 @@
     "coordinates",
     "dms",
     "cross-track",
-    "point-in-polygon"
+    "point-in-polygon",
+    "route",
+    "spherical-cap"
   ],
   "license": "MIT",
   "repository": {

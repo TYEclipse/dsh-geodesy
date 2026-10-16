@@ -1,7 +1,9 @@
 /**
  * Rhumb-line math tests. Every numeric anchor comes from the independent
- * closed-form + numeric-integration oracle test/anchors_v2.py — none of the
+ * closed-form + numeric-integration oracle test/oracle/anchors.py — none of the
  * values were derived from the implementation itself.
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_RADIUS_KM, compassPoint } from '../src/geodesy.ts'

@@ -1,7 +1,9 @@
 /**
  * Core math tests for dsh-geodesy. Every numeric assertion is anchored to a
- * value produced by an independent closed-form script (test/anchors.py) —
- * no values were derived from the implementation itself.
+ * value produced by an independent closed-form script (test/oracle/anchors.py)
+ * — no values were derived from the implementation itself.
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -61,8 +63,8 @@ describe('haversineKm', () => {
 
   it('uses the configured radius', () => {
     const moon = haversineKm({ lat: 0, lon: 0 }, { lat: 0, lon: 1 }, 1737.4)
-    // 2*pi*1737.4/360 ≈ 30.322 km per lunar degree
-    expect(moon).toBeCloseTo(30.3225, 2)
+    // 2*pi*1737.4/360 = 30.323350 km per lunar degree (the oracle prints it)
+    expect(moon).toBeCloseTo(30.32335, 6)
   })
 })
 

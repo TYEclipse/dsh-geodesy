@@ -1,6 +1,8 @@
 /**
  * Coordinate parsing tests for dsh-geodesy. Anchors: 37°46′30″N = 37.775,
  * 122°25′8.4″W = -122.419 (verified by the independent anchor script).
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 import { describe, expect, it } from 'vitest'
 import { parseCoordInput, parseToken } from '../src/coords.ts'

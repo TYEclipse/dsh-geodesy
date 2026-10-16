@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: nine pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: eleven pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -23,7 +23,8 @@ import {
 import { rhumbBearing, rhumbDistanceKm } from './rhumb.ts'
 import { greatCircleIntersection } from './intersection.ts'
 import { sphericalPolygonArea } from './area.ts'
-import { crossTrack } from './path.ts'
+import { sphericalCap } from './cap.ts'
+import { crossTrack, polylinePath } from './path.ts'
 import { pointInPolygon } from './region.ts'
 import { parseCoordInput, type CoordKind } from './coords.ts'
 import type { ResolvedConfig } from './index.ts'
@@ -38,6 +39,8 @@ export interface ToolSet {
   geo_area: ToolDefinition
   geo_cross_track: ToolDefinition
   geo_point_in_polygon: ToolDefinition
+  geo_path: ToolDefinition
+  geo_circle: ToolDefinition
 }
 
 /** Full output of geo_distance: success keys always present, `reason` only on failure. */
@@ -161,6 +164,60 @@ export interface PointInPolygonToolResult {
   reason?: string
 }
 
+/** One leg of a geo_path route, as reported to the agent. */
+export interface PathLegResult {
+  leg: number
+  fromIndex: number
+  toIndex: number
+  distanceKm: number
+  cumulativeKm: number
+  initialBearing?: number
+  compass?: string
+}
+
+/** Full output of geo_path. */
+export interface PathToolResult {
+  valid: boolean
+  points?: number
+  legs?: PathLegResult[]
+  totalKm?: number
+  straightKm?: number
+  detourKm?: number
+  detourPercent?: number
+  closureKm?: number
+  closesLoop?: boolean
+  maxLegKm?: number
+  minLegKm?: number
+  zeroLengthLegs?: number[]
+  note?: string
+  reason?: string
+}
+
+/** Full output of geo_circle. */
+export interface CircleToolResult {
+  valid: boolean
+  angularRadiusDeg?: number
+  areaKm2?: number
+  surfaceFraction?: number
+  boundaryKm?: number
+  boundaryIsGreatCircle?: boolean
+  minLat?: number
+  maxLat?: number
+  minLon?: number
+  maxLon?: number
+  lonSpanDeg?: number
+  crossesAntimeridian?: boolean
+  coversAllLongitudes?: boolean
+  includesNorthPole?: boolean
+  includesSouthPole?: boolean
+  coversWholeSphere?: boolean
+  pointDistanceKm?: number
+  containsPoint?: boolean
+  pointOnBoundary?: boolean
+  note?: string
+  reason?: string
+}
+
 function renderDistance(value: unknown): string {
   const result = value as DistanceResult
   if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
@@ -248,7 +305,38 @@ function renderPointInPolygon(value: unknown): string {
   return text
 }
 
-/** Build all nine tool definitions from the resolved config. */
+function renderPath(value: unknown): string {
+  const result = value as PathToolResult
+  if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
+  let text = `${result.points}-waypoint path: ${result.totalKm} km total in ${result.legs?.length} legs`
+    + ` — straight line ${result.straightKm} km, detour +${result.detourKm} km`
+  if (result.detourPercent !== undefined) text += ` (${result.detourPercent}%)`
+  text += `; longest leg ${result.maxLegKm} km, shortest ${result.minLegKm} km`
+  text += result.closesLoop
+    ? `; the path closes a loop (returns to its start)`
+    : `; ${result.closureKm} km back to the start`
+  if (result.note !== undefined) text += ` — ${result.note}`
+  return text
+}
+
+function renderCircle(value: unknown): string {
+  const result = value as CircleToolResult
+  if (!result.valid) return `invalid input: ${result.reason ?? 'unknown error'}`
+  let text = `spherical cap: area ${result.areaKm2} km² (${result.surfaceFraction} of the sphere),`
+    + ` boundary circle ${result.boundaryKm} km around a ${result.angularRadiusDeg}° angular radius;`
+    + ` latitude ${result.minLat}° to ${result.maxLat}°`
+  text += result.coversAllLongitudes
+    ? ', all longitudes'
+    : `, longitude ${result.minLon}° to ${result.maxLon}° (width ${result.lonSpanDeg}°)`
+  if (result.pointDistanceKm !== undefined) {
+    text += ` — the query point is ${result.pointDistanceKm} km from the centre: `
+    text += result.pointOnBoundary ? 'on the boundary circle' : result.containsPoint ? 'inside the cap' : 'outside the cap'
+  }
+  if (result.note !== undefined) text += ` — ${result.note}`
+  return text
+}
+
+/** Build all eleven tool definitions from the resolved config. */
 export function buildGeodesyTools(config: ResolvedConfig): ToolSet {
   const radiusKm = config.radiusKm
   const maxDistanceKm = Math.PI * radiusKm
@@ -824,6 +912,242 @@ export function buildGeodesyTools(config: ResolvedConfig): ToolSet {
     },
   })
 
+  const geo_path = defineTool({
+    name: 'geo_path',
+    description: 'Total the distance of a multi-leg route. Give an ordered list of {lat, lon} waypoints (2 to 50) '
+      + 'and get each leg\'s great-circle length, its heading (bearing + compass point) and the running total, '
+      + 'plus the route total, the straight-line distance between the endpoints, the detour (how much further '
+      + `the route is than the direct line) and the distance back to the start. All distances are km on a ${radiusKm} km sphere. `
+      + 'A leg whose two waypoints are identical is reported as 0 km with no heading — the bearing of a '
+      + 'zero-length great circle does not exist. Use it for "how long is this route", "how much of a detour '
+      + 'is this" and "what heading does each leg take". Never add up leg distances by hand — use this instead.',
+    parameters: {
+      points: {
+        type: 'array',
+        required: true,
+        description: 'Ordered route waypoints as {lat, lon} objects (at least 2, at most 50).',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+            lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+          },
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          points: { type: 'number' },
+          legs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                leg: { type: 'number', required: true },
+                fromIndex: { type: 'number', required: true },
+                toIndex: { type: 'number', required: true },
+                distanceKm: { type: 'number', required: true },
+                cumulativeKm: { type: 'number', required: true },
+                initialBearing: { type: 'number' },
+                compass: { type: 'string' },
+              },
+            },
+          },
+          totalKm: { type: 'number' },
+          straightKm: { type: 'number' },
+          detourKm: { type: 'number' },
+          detourPercent: { type: 'number' },
+          closureKm: { type: 'number' },
+          closesLoop: { type: 'boolean' },
+          maxLegKm: { type: 'number' },
+          minLegKm: { type: 'number' },
+          zeroLengthLegs: { type: 'array', items: { type: 'number' } },
+          note: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+      render: (_args: { points: Array<{ lat: number; lon: number }> }, value: unknown) =>
+        [{ type: 'text', text: renderPath(value) }],
+    },
+    async execute(args: { points: Array<{ lat: number; lon: number }> }): Promise<PathToolResult> {
+      if (!Array.isArray(args.points)) {
+        return { valid: false, reason: 'points must be an array of {lat, lon} objects' }
+      }
+      const outcome = polylinePath(args.points, radiusKm)
+      if (outcome.error !== undefined) return { valid: false, reason: outcome.error }
+      const info = outcome.result!
+      const legs: PathLegResult[] = info.legs.map((leg) => {
+        const reported: PathLegResult = {
+          leg: leg.leg,
+          fromIndex: leg.fromIndex,
+          toIndex: leg.toIndex,
+          distanceKm: round(leg.distanceKm),
+          cumulativeKm: round(leg.cumulativeKm),
+        }
+        if (leg.initialBearing !== undefined) {
+          reported.initialBearing = round(leg.initialBearing)
+          reported.compass = leg.compass
+        }
+        return reported
+      })
+      const totalKm = round(info.totalKm)
+      const straightKm = round(info.straightKm)
+      const result: PathToolResult = {
+        valid: true,
+        points: info.points,
+        legs,
+        totalKm,
+        straightKm,
+        detourKm: round(totalKm - straightKm),
+        closureKm: round(info.closureKm),
+        closesLoop: info.closesLoop,
+        maxLegKm: round(info.maxLegKm),
+        minLegKm: round(info.minLegKm),
+        zeroLengthLegs: info.zeroLengthLegs,
+      }
+      if (straightKm > 0) {
+        result.detourPercent = round(((totalKm - straightKm) / straightKm) * 100, 3)
+      }
+      const notes: string[] = []
+      if (info.zeroLengthLegs.length > 0) {
+        const label = info.zeroLengthLegs.length > 1 ? 'legs' : 'leg'
+        notes.push(`${label} ${info.zeroLengthLegs.join(', ')} ${info.zeroLengthLegs.length > 1 ? 'are' : 'is'}`
+          + ' zero-length (identical consecutive waypoints) — a zero-length leg has no unique heading,'
+          + ' so its initialBearing and compass are omitted')
+      }
+      if (result.closesLoop) {
+        notes.push('the last waypoint is the first one, so the route is a closed loop: the straight-line'
+          + ' distance is zero and no detour percentage is meaningful')
+      }
+      if (notes.length > 0) result.note = notes.join('; ')
+      return result
+    },
+  })
+
+  const geo_circle = defineTool({
+    name: 'geo_circle',
+    description: 'Describe the area within a fixed distance of a point on a sphere (a spherical cap / "circle '
+      + 'of radius r" on the globe): its surface area and what fraction of the sphere that is, the length of '
+      + 'the boundary circle, whether the boundary is itself a great circle, and the latitude/longitude box '
+      + 'the cap occupies — including the two cases a naive planar box gets wrong (a cap that reaches a pole '
+      + 'spans every longitude; a cap over the antimeridian has a box that wraps). Optionally pass one more '
+      + 'point (pointLat/pointLon) to learn whether it is inside the cap, outside it, or on the boundary '
+      + `circle. All distances are km on a ${radiusKm} km sphere. Never estimate surface coverage by treating `
+      + 'the region as a flat disc — use this instead.',
+    parameters: {
+      lat: { type: 'number', required: true, description: 'Latitude of the cap centre, -90 to 90.' },
+      lon: { type: 'number', required: true, description: 'Longitude of the cap centre, -180 to 180.' },
+      radiusKm: { type: 'number', required: true, description: 'Cap radius measured along the surface, in km (must be > 0).' },
+      pointLat: { type: 'number', description: 'Optional latitude of a query point to test for containment.' },
+      pointLon: { type: 'number', description: 'Optional longitude of a query point to test for containment (required together with pointLat).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          angularRadiusDeg: { type: 'number' },
+          areaKm2: { type: 'number' },
+          surfaceFraction: { type: 'number' },
+          boundaryKm: { type: 'number' },
+          boundaryIsGreatCircle: { type: 'boolean' },
+          minLat: { type: 'number' },
+          maxLat: { type: 'number' },
+          minLon: { type: 'number' },
+          maxLon: { type: 'number' },
+          lonSpanDeg: { type: 'number' },
+          crossesAntimeridian: { type: 'boolean' },
+          coversAllLongitudes: { type: 'boolean' },
+          includesNorthPole: { type: 'boolean' },
+          includesSouthPole: { type: 'boolean' },
+          coversWholeSphere: { type: 'boolean' },
+          pointDistanceKm: { type: 'number' },
+          containsPoint: { type: 'boolean' },
+          pointOnBoundary: { type: 'boolean' },
+          note: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+      render: (_args: {
+        lat: number
+        lon: number
+        radiusKm: number
+        pointLat?: number
+        pointLon?: number
+      }, value: unknown) => [{ type: 'text', text: renderCircle(value) }],
+    },
+    async execute(args: {
+      lat: number
+      lon: number
+      radiusKm: number
+      pointLat?: number
+      pointLon?: number
+    }): Promise<CircleToolResult> {
+      const reason = validatePoint(args.lat, args.lon)
+      if (reason !== undefined) return { valid: false, reason }
+      const hasPointLat = args.pointLat !== undefined
+      const hasPointLon = args.pointLon !== undefined
+      if (hasPointLat !== hasPointLon) {
+        return { valid: false, reason: 'pointLat and pointLon must be given together' }
+      }
+      let point: { lat: number; lon: number } | undefined
+      if (hasPointLat && hasPointLon) {
+        const pointReason = validatePoint(args.pointLat!, args.pointLon!)
+        if (pointReason !== undefined) return { valid: false, reason: `query point: ${pointReason}` }
+        point = { lat: args.pointLat!, lon: args.pointLon! }
+      }
+      const outcome = sphericalCap({ lat: args.lat, lon: args.lon }, args.radiusKm, radiusKm, point)
+      if (outcome.error !== undefined) return { valid: false, reason: outcome.error }
+      const info = outcome.result!
+      const result: CircleToolResult = {
+        valid: true,
+        angularRadiusDeg: round(info.angularRadiusDeg),
+        areaKm2: round(info.areaKm2),
+        surfaceFraction: round(info.surfaceFraction, 10),
+        boundaryKm: round(info.boundaryKm),
+        boundaryIsGreatCircle: info.boundaryIsGreatCircle,
+        minLat: round(info.minLat),
+        maxLat: round(info.maxLat),
+        minLon: round(info.minLon),
+        maxLon: round(info.maxLon),
+        lonSpanDeg: round(info.lonSpanDeg),
+        crossesAntimeridian: info.crossesAntimeridian,
+        coversAllLongitudes: info.coversAllLongitudes,
+        includesNorthPole: info.includesNorthPole,
+        includesSouthPole: info.includesSouthPole,
+        coversWholeSphere: info.coversWholeSphere,
+      }
+      if (info.pointDistanceKm !== undefined) {
+        result.pointDistanceKm = round(info.pointDistanceKm)
+        result.containsPoint = info.containsPoint
+        result.pointOnBoundary = info.pointOnBoundary
+      }
+      const notes: string[] = []
+      if (info.coversWholeSphere) {
+        notes.push(`the radius is at least half the circumference (${round(Math.PI * radiusKm)} km), so the cap covers the whole sphere`)
+      } else if (info.angularRadiusDeg > 90) {
+        notes.push('the cap is larger than a hemisphere — its area is more than half the sphere')
+      }
+      if (info.coversAllLongitudes && !info.coversWholeSphere) {
+        notes.push('the cap reaches a pole, so it spans every longitude; minLon/maxLon are reported as the full range')
+      } else if (info.crossesAntimeridian) {
+        notes.push('the longitude box wraps the antimeridian, so minLon is east of maxLon — join them through ±180°')
+      }
+      if (info.boundaryIsGreatCircle) {
+        notes.push('the boundary circle is itself a great circle (the radius is exactly a quarter of the circumference)')
+      }
+      if (notes.length > 0) result.note = notes.join('; ')
+      return result
+    },
+  })
+
   return {
     geo_distance,
     geo_bearing,
@@ -834,5 +1158,7 @@ export function buildGeodesyTools(config: ResolvedConfig): ToolSet {
     geo_area,
     geo_cross_track,
     geo_point_in_polygon,
+    geo_path,
+    geo_circle,
   }
 }

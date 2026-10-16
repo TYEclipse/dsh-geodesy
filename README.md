@@ -1,8 +1,8 @@
 # dsh-geodesy
 
-Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances and point-in-polygon tests — all as local, deterministic tools with **zero runtime dependencies**.
+Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals and spherical caps (coverage areas) — all as local, deterministic tools with **zero runtime dependencies**.
 
-> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内，共九个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈等）。
+> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内、多段航线总里程与偏航/绕行量、球面圆（覆盖范围），共十一个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈、把球面覆盖范围当平面圆算等）。
 
 ## Why
 
@@ -17,6 +17,8 @@ LLMs reliably fumble geodesic math: they mix up latitude/longitude order, use th
 - `geo_area` — area and perimeter of a spherical polygon via spherical excess (Girard's theorem), with the complementary region's area always included
 - `geo_cross_track` — how far a point is off a great-circle path: signed cross-track distance, along-track distance to the perpendicular foot, the foot's coordinates, whether the foot is between the path endpoints, and the distance to the nearest point of the segment
 - `geo_point_in_polygon` — is a coordinate inside a spherical polygon? Reports both sides of the boundary (the enclosed region and the region left of the directed edges), boundary hits, and the area of the region the point falls in
+- `geo_path` — totals a multi-leg route: each leg's length, heading (bearing + compass point) and running total, plus the route total, the straight-line distance between the endpoints, the detour and the distance back to the start
+- `geo_circle` — a spherical cap ("everything within r of a point"): its area and share of the sphere, its boundary circle's length, whether that boundary is a great circle, the latitude/longitude box it occupies (pole and antimeridian cases included), and whether a given point is inside it
 
 All math uses the IUGG mean Earth radius 6371.0088 km (configurable via the plugin `radiusKm` option, e.g. for lunar or planetary calculations).
 
@@ -42,6 +44,8 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 - "I'm steaming from (0,0) to (0,10) — how far off track am I at (1,5), and where do I rejoin?"
 - "Is (45, 45) inside the spherical triangle (0,0), (0,90), (90,0)?"
 - "This 0.2° box sits at the antimeridian — is (0, 0) inside it?" (the antipode trap: a naive angle-sum test says yes, it is not)
+- "How long is the route London → Paris → Rome, and how much longer is it than flying straight there?"
+- "Everything within 300 km of Beijing — what area is that, and where does its edge run?"
 
 ### Examples
 
@@ -124,6 +128,54 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 }
 ```
 
+`geo_path` — London (51.5074, -0.1278) → Paris (48.8566, 2.3522) → Rome (41.9028, 12.4964): the route is 15 km longer than the direct line, a detour of about 1%:
+
+```json
+{
+  "valid": true,
+  "points": 3,
+  "legs": [
+    { "leg": 1, "fromIndex": 0, "toIndex": 1, "distanceKm": 343.556535, "cumulativeKm": 343.556535, "initialBearing": 148.115617, "compass": "SSE" },
+    { "leg": 2, "fromIndex": 1, "toIndex": 2, "distanceKm": 1105.281675, "cumulativeKm": 1448.83821, "initialBearing": 130.58791, "compass": "SE" }
+  ],
+  "totalKm": 1448.83821,
+  "straightKm": 1433.783288,
+  "detourKm": 15.054922,
+  "detourPercent": 1.05,
+  "closureKm": 1433.783288,
+  "closesLoop": false,
+  "maxLegKm": 1105.281675,
+  "minLegKm": 343.556535,
+  "zeroLengthLegs": []
+}
+```
+
+`geo_circle` — everything within 300 km of Beijing (39.9042, 116.4074), asking whether (40.5, 117) is inside. The cap is 0.055% of the Earth's surface, its boundary circle is 1884 km long, and the box it occupies spans 5.4° of latitude and 7.0° of longitude:
+
+```json
+{
+  "valid": true,
+  "angularRadiusDeg": 2.697961,
+  "areaKm2": 282691.098586,
+  "surfaceFraction": 0.0005542247,
+  "boundaryKm": 1884.259081,
+  "boundaryIsGreatCircle": false,
+  "minLat": 37.206239,
+  "maxLat": 42.602161,
+  "minLon": 112.889481,
+  "maxLon": 119.925319,
+  "lonSpanDeg": 7.035838,
+  "crossesAntimeridian": false,
+  "coversAllLongitudes": false,
+  "includesNorthPole": false,
+  "includesSouthPole": false,
+  "coversWholeSphere": false,
+  "pointDistanceKm": 83.198018,
+  "containsPoint": true,
+  "pointOnBoundary": false
+}
+```
+
 `geo_distance` — Beijing (39.9042, 116.4074) → Shanghai (31.2304, 121.4737):
 
 ```json
@@ -148,6 +200,13 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
   - `insideLeftRegion` — the region to the LEFT of the directed edges, i.e. exactly the region `geo_area` calls `areaKm2`. With counter-clockwise vertex order the two answers agree; with clockwise order they are opposites (a `note` says so).
   - Points within ~6 mm of an edge (floating-point tolerance) are `onBoundary: true` and in neither region. The method is a signed great-circle ray-crossing winding, which — unlike the popular "sum the angles at the query point" shortcut — does not report points near a polygon's antipode as inside.
 - **`geo_cross_track`** sign conventions: `crossTrackKm` is positive when the query point is to the LEFT of the direction of travel (right-hand rule, seen from outside the sphere); `alongTrackKm` is positive when the perpendicular foot lies ahead of the path start and negative when it lies behind. When the foot falls outside the segment, `withinSegment: false` and `distanceToSegmentKm` is the distance to the nearer endpoint — not the perpendicular distance (a `note` says so). A point exactly 90° off the path has no unique foot and is reported as an error.
+- **`geo_path`**: the legs are great-circle arcs, so the route total is the sum of the leg lengths and the detour (`detourKm` = total − straight line) is never negative — it is zero only when every waypoint lies on the single great circle through the endpoints. `detourKm` is the difference of the two **reported** totals (each rounded to 6 decimals), so it can be checked by hand against them. A leg joining two identical waypoints is reported as 0 km with **no** `initialBearing`/`compass` (a zero-length great circle has no heading — inventing 0° would be a silent wrong answer) and its leg number is listed in `zeroLengthLegs`. When the last waypoint equals the first, `closesLoop` is true, the straight-line distance is 0 and no `detourPercent` is reported.
+- **`geo_circle`** describes a spherical cap, not a flat disc:
+  - `areaKm2` is the exact cap area `2πR²(1 − cos d)` and `surfaceFraction` its share of the whole sphere; the planar approximation `πr²` only holds for tiny caps (at r = 1000 km it overshoots the true area by 0.21%).
+  - The latitude box is `centre ± d`; `boundaryIsGreatCircle` is true only when the radius is exactly a quarter of the circumference (d = 90°), where the cap is a hemisphere.
+  - A cap that reaches a pole **contains** it: `includesNorthPole`/`includesSouthPole` are set, `coversAllLongitudes` is true, and `minLon`/`maxLon` are reported as the full range (the cap is not a rectangle). A cap that straddles the antimeridian has a box that wraps: `crossesAntimeridian` is true and `minLon` is **east** of `maxLon` (join them through ±180°); `lonSpanDeg` always holds the true angular width.
+  - A radius of half the circumference or more covers the whole sphere (`coversWholeSphere`, area = `4πR²`, `boundaryKm` = 0).
+  - `containsPoint`/`pointOnBoundary` are decided by great-circle distance, never by the box — a box test would misjudge points near the box corners. "On the boundary" means within ~6 mm of the circle; a point placed there counts as neither inside nor outside. Note that tool coordinates are rounded to 1e-6 degrees (~11 cm of arc), which is **coarser** than that tolerance, so do not expect a rounded coordinate to be recognized as exactly on the edge.
 - **`geo_intersection`** reports the crossing nearest to the first path's start; when that crossing lies on the reverse side of path 1 (bearing from start 1 differs by ~180°), a `note` says so and the antipodal crossing is the one ahead.
 - **`geo_rhumb`** returns bearing 0 for zero-length lines (no unique heading exists).
 
@@ -179,6 +238,8 @@ Invalid input returns `valid: false` with a reason — never a silent guess.
 | `geo_area` | spherical polygon area + perimeter (spherical excess), complement area |
 | `geo_cross_track` | off-track distance to a great-circle path: signed cross-track + along-track, foot, segment distance |
 | `geo_point_in_polygon` | inside/outside test for a spherical polygon (both sides, boundary hits, region area) |
+| `geo_path` | multi-leg route totals: per-leg distance/heading/running total, detour vs the straight line |
+| `geo_circle` | spherical cap: area, boundary circle length, lat/lon box (poles & antimeridian), containment |
 
 ## Configuration
 
@@ -193,7 +254,7 @@ plugins:
 ```sh
 pnpm install
 pnpm build
-pnpm test     # 187 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
+pnpm test     # 223 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
 pnpm lint
 ```
 

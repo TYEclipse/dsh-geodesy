@@ -19,7 +19,7 @@
  *
  * @module dsh-geodesy/path
  */
-import { DEFAULT_RADIUS_KM, haversineKm } from "./geodesy.js";
+import { DEFAULT_RADIUS_KM, compassPoint, haversineKm, initialBearing } from "./geodesy.js";
 const DEG = Math.PI / 180;
 function dot(a, b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -96,6 +96,78 @@ export function crossTrack(p1, p2, p3, radiusKm = DEFAULT_RADIUS_KM) {
                 ? Math.abs(crossTrackKm)
                 : Math.min(haversineKm(p3, p1, radiusKm), haversineKm(p3, p2, radiusKm)),
             pathLengthKm: pathAngle * radiusKm,
+        },
+    };
+}
+/** Fewest / most waypoints a multi-point path may have. */
+export const POLYLINE_MIN_POINTS = 2;
+export const POLYLINE_MAX_POINTS = 50;
+/**
+ * Path totals for an ordered list of waypoints: per-leg distances and
+ * headings, the running total, and how much longer the route is than the
+ * straight line between its endpoints.
+ *
+ * A zero-length leg (two identical consecutive waypoints) is reported with
+ * its length 0 and *no* heading — the bearing of a zero-length great circle
+ * is undefined, and inventing 0° there would be a silent wrong answer.
+ * `detourKm` is derived from the two reported totals so a reader can check it
+ * by hand; whether it may be expressed as a percentage is decided by the
+ * caller (`straightKm === 0` means there is no percentage).
+ */
+export function polylinePath(points, radiusKm = DEFAULT_RADIUS_KM) {
+    if (points.length < POLYLINE_MIN_POINTS) {
+        return { error: `a path needs at least ${POLYLINE_MIN_POINTS} waypoints (got ${points.length})` };
+    }
+    if (points.length > POLYLINE_MAX_POINTS) {
+        return { error: `a path supports at most ${POLYLINE_MAX_POINTS} waypoints (got ${points.length})` };
+    }
+    for (let index = 0; index < points.length; index += 1) {
+        const p = points[index];
+        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) {
+            return { error: 'every waypoint must have finite numeric lat/lon' };
+        }
+        if (p.lat < -90 || p.lat > 90 || p.lon < -180 || p.lon > 180) {
+            return { error: `waypoint ${index + 1} (${p.lat}, ${p.lon}) is out of range (lat [-90, 90], lon [-180, 180])` };
+        }
+    }
+    const legs = [];
+    const zeroLengthLegs = [];
+    let cumulative = 0;
+    for (let index = 0; index < points.length - 1; index += 1) {
+        const from = points[index];
+        const to = points[index + 1];
+        const distanceKm = haversineKm(from, to, radiusKm);
+        cumulative += distanceKm;
+        const leg = {
+            leg: index + 1,
+            fromIndex: index,
+            toIndex: index + 1,
+            distanceKm,
+            cumulativeKm: cumulative,
+        };
+        if (distanceKm < 1e-9) {
+            zeroLengthLegs.push(index + 1);
+        }
+        else {
+            leg.initialBearing = initialBearing(from, to);
+            leg.compass = compassPoint(leg.initialBearing);
+        }
+        legs.push(leg);
+    }
+    const closureKm = haversineKm(points[points.length - 1], points[0], radiusKm);
+    const distances = legs.map((leg) => leg.distanceKm);
+    return {
+        result: {
+            points: points.length,
+            legs,
+            totalKm: cumulative,
+            straightKm: haversineKm(points[0], points[points.length - 1], radiusKm),
+            detourKm: cumulative - haversineKm(points[0], points[points.length - 1], radiusKm),
+            closureKm,
+            closesLoop: closureKm < 1e-9,
+            maxLegKm: Math.max(...distances),
+            minLegKm: Math.min(...distances),
+            zeroLengthLegs,
         },
     };
 }

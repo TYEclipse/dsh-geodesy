@@ -2,6 +2,13 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-geodesy`
 
+## [0.4.0] — 2026-10-17
+### Minor · R72
+- [自主进化] R72 新增 **geo_path**（多段航线总里程：逐段大圆距离/初始方位/罗盘点/累计里程 + 总里程、首末直连距离、绕行量 detourKm 与百分比、回环闭合距离；同点相邻段如实报 0 km 且**不给航向**——零长航段没有唯一朝向，`zeroLengthLegs` 列出行号；闭合环不给无意义的百分比）
+- [自主进化] R72 新增 **geo_circle**（球面圆/球冠：精确面积 2πR²(1−cos d)、占全球比例、边界小圆周长、边界是否为大圆、纬经度包围盒——含**到达极点即全经度**与**跨 180° 经线的框会折返**（minLon 在 maxLon 以东）两种平面盒子必错的形态、以及按大圆距离（非包围盒）判定的包含/在边界上）
+- [工具化] 三份 oracle（`test/anchors.py` + `test/anchors_v2.py` + `test/oracle/anchors.py`）合并为**单一** `test/oracle/anchors.py`（A 大圆/B 恒向线·交点·面积/C 偏航·点在多边形/D 航线·球冠 四区，逐条打印测试里的每个数值锚点），并新增 **`--check` 自检**：用定义式（半球 = 2πR²、全球 = 4πR²、1 km 球冠 ≈ πr²、1° 弧长）与**独立方法**（准蒙特卡洛立体角积分、边界圆密集采样核对经纬极值、球面面积两种推导互校）当尺子；迁移 13/15 → **14/15**、自检覆盖 12/13 → **13/13**
+- [测试] 223 测试（+36）、覆盖率 90.82% → **92.09%**（基线棘轮上调）、全部 10 个测试文件带 `ORACLE:` 仓内相对路径标记；无损 JSON 口径统一到共享模板 `test/helpers/lossless-json.ts`（`assertLossless`：undefined 活键 + `-0` + 非有限数）
+
 ## [0.3.0] — 2026-09-28
 ### Minor · R52
 - [自主进化] R52 新增 geo_cross_track（偏航距离：带符号 cross-track + along-track + 垂足 + 段距离）与 geo_point_in_polygon（球面点在多边形内，双区域语义）；点内测试用带符号大圆射线交越 winding，避开朴素角和方法在多边形对跖点附近的静默误判

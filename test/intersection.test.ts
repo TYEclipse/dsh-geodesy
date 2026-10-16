@@ -1,8 +1,10 @@
 /**
  * Great-circle intersection tests. Anchors from the independent vector
- * oracle test/anchors_v2.py; every result is additionally cross-checked
+ * oracle test/oracle/anchors.py; every result is additionally cross-checked
  * against the geometric property that the crossing must lie on both
  * circles (bearing from each start equals the path bearing).
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_RADIUS_KM, initialBearing } from '../src/geodesy.ts'

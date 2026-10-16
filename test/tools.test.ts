@@ -3,10 +3,13 @@
  * original tools, including the valid:false branches. Anchored numeric values
  * come from the independent anchor script.
  *
- * ORACLE: test/anchors.py — the v0.1/v0.2 anchors quoted throughout this file
- * (great-circle, bearings, DMS, rhumb) are printed by that script. The v0.3.0
- * cross-track and point-in-polygon anchors live in test/oracle/anchors.py and
- * are asserted in test/path.test.ts and test/region.test.ts.
+ * ORACLE: test/oracle/anchors.py — every anchor quoted in this suite (the v0.1
+ * great-circle / bearing / destination / DMS / compass values, and the v0.2
+ * rhumb values) is printed by section A and section B of that script. The
+ * v0.3 cross-track / point-in-polygon anchors are printed by section C and
+ * asserted in test/path.test.ts and test/region.test.ts; the v0.4 route and
+ * cap anchors are printed by section D and asserted in test/polyline.test.ts
+ * and test/cap.test.ts.
  */
 import { describe, expect, it } from 'vitest'
 import { resolveConfig } from '../src/index.ts'
@@ -190,15 +193,17 @@ describe('coord_parse', () => {
 })
 
 describe('tool surface', () => {
-  it('exposes exactly nine tools with stable names', () => {
+  it('exposes exactly eleven tools with stable names', () => {
     expect(Object.keys(tools).sort()).toEqual([
       'coord_parse',
       'geo_area',
       'geo_bearing',
+      'geo_circle',
       'geo_cross_track',
       'geo_destination',
       'geo_distance',
       'geo_intersection',
+      'geo_path',
       'geo_point_in_polygon',
       'geo_rhumb',
     ])
