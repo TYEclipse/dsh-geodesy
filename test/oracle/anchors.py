@@ -585,6 +585,148 @@ def path_totals(points, radius=R):
     }
 
 
+# ── bounding boxes (section E, v0.5) ──────────────────────────────────────
+def slerp(a, b, u):
+    """Point at fraction u of the great-circle arc a -> b (unit-vector slerp).
+
+    Independent of the TypeScript implementation: every along-arc point here
+    comes from interpolating the two endpoints, whereas src/bbox.ts finds the
+    latitude extreme by projecting the pole onto the circle's plane.
+    """
+    v1, v2 = xyz(a), xyz(b)
+    omega = math.acos(clamp(dot(v1, v2)))
+    if omega < 1e-12:
+        return a
+    s = math.sin(omega)
+    v = tuple((math.sin((1.0 - u) * omega) * c1 + math.sin(u * omega) * c2) / s
+              for c1, c2 in zip(v1, v2))
+    return xyz_to_latlon(v)
+
+
+def circle_latitude_extremes(a, b, radius=R):
+    """(distance to the highest point, its latitude, distance to the lowest, its latitude).
+
+    Clairaut's relation: on a great circle ``cos(lat) * sin(course)`` is
+    constant, so the latitude is extremal where the course is due east/west.
+    Solving d(lat)/ds = 0 gives ``tan(s/R) = cos(lat1) cos(course1) / sin(lat1)``.
+    Distances are along-track km measured forward from ``a``.
+    """
+    phi1 = math.radians(a[0])
+    course = math.radians(initial_bearing(a, b))
+
+    def lat_at(s_km):
+        return math.degrees(math.asin(clamp(
+            math.sin(phi1) * math.cos(s_km / radius)
+            + math.cos(phi1) * math.sin(s_km / radius) * math.cos(course))))
+
+    first_s = radius * math.atan2(math.cos(phi1) * math.cos(course), math.sin(phi1))
+    first_lat = lat_at(first_s)
+    opposite_s = first_s + math.pi * radius
+    opposite_lat = lat_at(opposite_s)
+    # A meridian great circle (its normal perpendicular to the polar axis)
+    # passes through both poles, so its extremes are exactly ±90°. Near a pole
+    # the asin form above is a precision cliff (asin(1 - 1e-7) differs from 90°
+    # by 8e-7°), so snap instead of trusting the float dust.
+    normal = cross(xyz(a), xyz(b))
+    if abs(normal[2]) < 1e-12 and abs(dot(normal, normal)) > 0:
+        first_lat, opposite_lat = (90.0, -90.0) if first_lat >= 0 else (-90.0, 90.0)
+    if opposite_lat > first_lat:
+        return opposite_s, opposite_lat, first_s, first_lat
+    return first_s, first_lat, opposite_s, opposite_lat
+
+
+def arc_crosses_antimeridian(a, b, samples=4096):
+    """True when the great-circle arc a->b passes longitude ±180°.
+
+    The arc is walked with slerp and its longitude kept continuous: it crosses
+    the antimeridian exactly when the unwrapped longitude leaves (-180, 180].
+    """
+    if math.acos(clamp(dot(xyz(a), xyz(b)))) < 1e-12:
+        return False
+    previous = a
+    unwrapped = normalize_lon(a[1])
+    for step in range(1, samples + 1):
+        current = slerp(a, b, step / samples)
+        unwrapped += normalize_lon(current[1] - previous[1])
+        if unwrapped < -180.0 - 1e-9 or unwrapped > 180.0 + 1e-9:
+            return True
+        previous = current
+    return False
+
+
+def minimal_lon_interval(lons):
+    """(start, width) of the shortest longitude interval containing every lon.
+
+    Cut the longitude circle at its largest gap and keep the complement; the
+    interval wraps the antimeridian when start + width > 180.
+    """
+    ordered = sorted(set(normalize_lon(lon) for lon in lons))
+    if not ordered:
+        return 0.0, 360.0
+    if len(ordered) == 1:
+        return ordered[0], 0.0
+    best_gap, start = -1.0, ordered[0]
+    for index, lon in enumerate(ordered):
+        following = ordered[index + 1] if index + 1 < len(ordered) else ordered[0] + 360.0
+        gap = following - lon
+        if gap > best_gap:
+            best_gap = gap
+            start = ordered[index + 1] if index + 1 < len(ordered) else ordered[0]
+    return start, 360.0 - best_gap
+
+
+def bbox(shape, points, radius=R):
+    """Everything the geo_bbox tool reports, for shape 'points' or 'path'."""
+    lats = [point[0] for point in points]
+    lons = [normalize_lon(point[1]) for point in points]
+    vertex_max, vertex_min = max(lats), min(lats)
+    max_lat, min_lat = vertex_max, vertex_min
+    north_bulge = south_bulge = 0.0
+    if shape == 'path':
+        for a, b in zip(points, points[1:]):
+            v1, v2 = xyz(a), xyz(b)
+            normal = cross(v1, v2)
+            if math.sqrt(dot(normal, normal)) < 1e-12:
+                if dot(v1, v2) < 0:
+                    raise ValueError('antipodal leg: the great circle is not unique')
+                continue
+            length_km = hav_km(a, b, radius)
+            tolerance = 1e-6  # mm-scale slack on "is this point on the arc"
+            hi_s, hi_lat, lo_s, lo_lat = circle_latitude_extremes(a, b, radius)
+            if -tolerance <= hi_s <= length_km + tolerance:
+                max_lat = max(max_lat, hi_lat)
+                north_bulge = max(north_bulge, hi_lat - vertex_max)
+                lons.append(slerp(a, b, min(1.0, max(0.0, hi_s / length_km)))[1])
+            if -tolerance <= lo_s <= length_km + tolerance:
+                min_lat = min(min_lat, lo_lat)
+                south_bulge = max(south_bulge, vertex_min - lo_lat)
+                lons.append(slerp(a, b, min(1.0, max(0.0, lo_s / length_km)))[1])
+            if arc_crosses_antimeridian(a, b):
+                lons.append(-180.0)
+    includes_north = max_lat >= 90.0 - 1e-12
+    includes_south = min_lat <= -90.0 + 1e-12
+    covers_all = includes_north or includes_south
+    if covers_all:
+        boxes = [{'minLat': min_lat, 'maxLat': max_lat, 'minLon': -180.0, 'maxLon': 180.0}]
+        span = 360.0
+    else:
+        start, span = minimal_lon_interval(lons)
+        end = start + span
+        if end <= 180.0 + 1e-9:
+            boxes = [{'minLat': min_lat, 'maxLat': max_lat, 'minLon': start, 'maxLon': min(180.0, end)}]
+        else:
+            boxes = [{'minLat': min_lat, 'maxLat': max_lat, 'minLon': start, 'maxLon': 180.0},
+                     {'minLat': min_lat, 'maxLat': max_lat, 'minLon': -180.0, 'maxLon': end - 360.0}]
+    result = {'shape': shape, 'boxes': boxes, 'minLat': min_lat, 'maxLat': max_lat,
+              'lonSpanDeg': span, 'crossesAntimeridian': len(boxes) == 2,
+              'coversAllLongitudes': covers_all, 'includesNorthPole': includes_north,
+              'includesSouthPole': includes_south, 'vertices': len(points),
+              'legs': len(points) - 1 if shape == 'path' else 0}
+    if shape == 'path':
+        result['bulgeKm'] = max(0.0, north_bulge, south_bulge) * DEG * radius
+    return result
+
+
 # ── section A: v0.1 anchors ───────────────────────────────────────────────
 BEIJING = (39.9042, 116.4074)
 SHANGHAI = (31.2304, 121.4737)
@@ -924,6 +1066,69 @@ def print_section_d():
     print(f"  distance_km={fmt(probe_distance, 9)} contains_point={probe_inside} on_boundary={probe_on}")
 
 
+# ── section E: v0.5 anchors (bounding boxes) ──────────────────────────────
+BBOX_CASES = [
+    ('pts_equator', 'points', [(0.0, 0.0), (0.0, 10.0)], 'two points on the equator (vertices only)'),
+    ('path_equator', 'path', [(0.0, 0.0), (0.0, 10.0)], 'the same two points as a route'),
+    ('pts_north40', 'points', [(40.0, 0.0), (40.0, 120.0)], 'two waypoints at 40°N, 120° apart (vertices only)'),
+    ('path_north40', 'path', [(40.0, 0.0), (40.0, 120.0)], 'the same two waypoints as a route: the arc bulges north'),
+    ('path_south40', 'path', [(-40.0, 0.0), (-40.0, 120.0)], 'the same route in the southern hemisphere'),
+    ('pts_pacific', 'points', [(0.0, 170.0), (0.0, -170.0)], 'two points either side of the antimeridian (vertices only)'),
+    ('path_pacific', 'path', [(0.0, 170.0), (0.0, -170.0)], 'a route across the antimeridian'),
+    ('path_wide', 'path', [(0.0, -179.0), (0.0, 179.0)], 'a 2° route that looks 358° wide if longitudes are not unwrapped'),
+    ('path_over_pole', 'path', [(80.0, 0.0), (80.0, 180.0)], 'a route whose shortest path runs over the north pole'),
+    ('path_meridian', 'path', [(0.0, 5.0), (10.0, 5.0), (20.0, 5.0)], 'a due-north route along one meridian'),
+    ('path_zero_leg', 'path', [(0.0, 0.0), (0.0, 0.0), (0.0, 10.0)], 'a route with a zero-length first leg'),
+    ('path_boundary180', 'path', [(0.0, 180.0), (10.0, 170.0)], 'a route that starts exactly on the antimeridian'),
+    ('path_route', 'path', [(39.9042, 116.4074), (31.2304, 121.4737), (22.3193, 114.1694)],
+     'Beijing -> Shanghai -> Hong Kong'),
+    ('pts_mixed', 'points', [(10.0, 10.0), (-20.0, 100.0), (30.0, -120.0)], 'three scattered points'),
+    ('path_antipodal', 'path', [(0.0, 0.0), (0.0, 180.0)],
+     'antipodal endpoints: no unique great circle (an error, not a box)'),
+]
+
+
+def print_section_e():
+    print('=== E: v0.5 anchors (geo_bbox) ===')
+    for tag, shape, points, note in BBOX_CASES:
+        print(f'\n[{tag}] {note}')
+        print(f'  shape={shape} vertices={len(points)} points={points}')
+        try:
+            info = bbox(shape, points)
+        except ValueError as error:
+            print(f'  error={error}')
+            continue
+        print(f"  min_lat={fmt(info['minLat'])} max_lat={fmt(info['maxLat'])} "
+              f"lon_span_deg={fmt(info['lonSpanDeg'])}")
+        print(f"  crosses_antimeridian={info['crossesAntimeridian']} "
+              f"covers_all_longitudes={info['coversAllLongitudes']} "
+              f"includes_north_pole={info['includesNorthPole']} includes_south_pole={info['includesSouthPole']}")
+        if 'bulgeKm' in info:
+            print(f"  bulge_km={fmt(info['bulgeKm'])}")
+        for index, box in enumerate(info['boxes'], start=1):
+            print(f"  box{index}: min_lat={fmt(box['minLat'])} max_lat={fmt(box['maxLat'])} "
+                  f"min_lon={fmt(box['minLon'])} max_lon={fmt(box['maxLon'])}")
+        if shape == 'path':
+            for a, b in zip(points, points[1:]):
+                if hav_km(a, b) < 1e-9:
+                    continue
+                hi_s, hi_lat, lo_s, lo_lat = circle_latitude_extremes(a, b)
+                print(f"  leg {a}->{b}: arc_high_s_km={fmt(hi_s)} arc_high_lat={fmt(hi_lat)} "
+                      f"arc_low_s_km={fmt(lo_s)} arc_low_lat={fmt(lo_lat)} "
+                      f"crosses_antimeridian={arc_crosses_antimeridian(a, b)}")
+
+
+def arc_samples(a, b, count=20001):
+    """Evenly spaced points along the arc a->b (dense-sampling cross-check)."""
+    return [slerp(a, b, index / (count - 1)) for index in range(count)]
+
+
+def lon_in_interval(lon, start, span):
+    """True when `lon` lies in the (possibly wrapping) interval [start, start+span]."""
+    offset = normalize_lon(lon - start)
+    return offset >= -1e-9 or offset + 360.0 <= span + 1e-9
+
+
 # ── self-check: definitional rulers and public values ─────────────────────
 def self_check():
     """Assert the oracle against definitional identities, public values and
@@ -1061,6 +1266,78 @@ def self_check():
     check('rhumb: the 45th parallel detour exceeds the great circle',
           rhumb_d > hav_km((45, 0), (45, 90)) + 100.0)
 
+    # 8. Bounding boxes: definitional rulers + dense sampling as a second method
+    one_degree = bbox('path', [(0.0, 0.0), (0.0, 1.0)])
+    close('bbox: 1 degree of longitude along the equator spans exactly 1 degree',
+          one_degree['lonSpanDeg'], 1.0, 1e-12)
+    close('bbox: an equatorial route has no latitude extent',
+          one_degree['maxLat'] - one_degree['minLat'], 0.0, 1e-12)
+    close('bbox: an equatorial route does not bulge', one_degree['bulgeKm'], 0.0, 1e-9)
+
+    for tag, shape, points, _ in BBOX_CASES:
+        if tag == 'path_antipodal':
+            continue
+        info = bbox(shape, points)
+        if shape == 'path':
+            sampled = []
+            for a, b in zip(points, points[1:]):
+                sampled.extend(arc_samples(a, b, 8001))
+        else:
+            sampled = list(points)
+        check(f'bbox[{tag}]: every sampled point is inside the latitude box',
+              all(info['minLat'] - 1e-6 <= point[0] <= info['maxLat'] + 1e-6 for point in sampled),
+              f"box [{info['minLat']:.9f}, {info['maxLat']:.9f}]")
+        close(f'bbox[{tag}]: the sampled latitude extremes match the box',
+              max(point[0] for point in sampled), info['maxLat'], 1e-3)
+        close(f'bbox[{tag}]: the sampled southern extreme matches the box',
+              min(point[0] for point in sampled), info['minLat'], 1e-3)
+        if not info['coversAllLongitudes']:
+            start = info['boxes'][0]['minLon']
+            span = info['lonSpanDeg']
+            check(f'bbox[{tag}]: every sampled point is inside the longitude interval',
+                  all(lon_in_interval(point[1], start, span) for point in sampled),
+                  f'interval starts at {start} spanning {span}')
+            sampled_start, sampled_span = minimal_lon_interval([point[1] for point in sampled])
+            close(f'bbox[{tag}]: the reported longitude interval is not wider than the samples need',
+                  span, sampled_span, 1e-3)
+            check(f'bbox[{tag}]: the interval starts where the samples start',
+                  abs(normalize_lon(sampled_start - start)) < 1e-3,
+                  f'sampled start {sampled_start}, reported {start}')
+
+    pts_box = bbox('points', [(40.0, 0.0), (40.0, 120.0)])
+    path_box = bbox('path', [(40.0, 0.0), (40.0, 120.0)])
+    mid_arc = slerp((40.0, 0.0), (40.0, 120.0), 0.5)
+    check('bbox: a route box reaches latitudes its waypoints never have',
+          path_box['maxLat'] > pts_box['maxLat'] + 10.0 and mid_arc[0] > pts_box['maxLat'],
+          f"waypoint max {pts_box['maxLat']:.3f}, route max {path_box['maxLat']:.3f}, mid-arc {mid_arc[0]:.3f}")
+    check('bbox: the vertex-only box would exclude the mid-arc point',
+          not (pts_box['minLat'] <= mid_arc[0] <= pts_box['maxLat']))
+    check('bbox: the route box contains the vertex box',
+          path_box['minLat'] <= pts_box['minLat'] and path_box['maxLat'] >= pts_box['maxLat'])
+    close('bbox: the bulge is exactly the route minus the waypoint extremes',
+          path_box['bulgeKm'], (path_box['maxLat'] - pts_box['maxLat']) * DEG * R, 1e-6)
+
+    pacific = bbox('path', [(0.0, 170.0), (0.0, -170.0)])
+    check('bbox: a route across the antimeridian needs two boxes',
+          pacific['crossesAntimeridian'] and len(pacific['boxes']) == 2,
+          f"boxes {pacific['boxes']}")
+    close('bbox: the two boxes together span the reported width',
+          sum(box['maxLon'] - box['minLon'] for box in pacific['boxes']), pacific['lonSpanDeg'], 1e-9)
+    check('bbox: a route that merely approaches ±180° still needs two boxes',
+          bbox('path', [(0.0, -179.0), (0.0, 179.0)])['crossesAntimeridian'])
+
+    polar = bbox('path', [(80.0, 0.0), (80.0, 180.0)])
+    check('bbox: a route over the pole spans every longitude',
+          polar['coversAllLongitudes'] and polar['includesNorthPole']
+          and polar['boxes'][0]['minLon'] == -180.0 and polar['boxes'][0]['maxLon'] == 180.0)
+    close('bbox: the route over the pole peaks at exactly 90 degrees', polar['maxLat'], 90.0, 0.0)
+
+    try:
+        bbox('path', [(0.0, 0.0), (0.0, 180.0)])
+        check('bbox: an antipodal leg is rejected', False)
+    except ValueError:
+        check('bbox: an antipodal leg is rejected', True)
+
     if failures:
         print('SELF-CHECK FAILED:', file=sys.stderr)
         for line in failures:
@@ -1084,6 +1361,8 @@ def main(argv=None):
     print_section_c()
     print()
     print_section_d()
+    print()
+    print_section_e()
     return 0
 
 

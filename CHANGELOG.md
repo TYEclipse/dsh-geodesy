@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-geodesy`
 
+## [0.5.0] — 2026-11-05
+### Minor · R90
+- [自主进化] R90 新增 geo_bbox（球面包围盒：弧线隆起 / 极点全经度 / 跨 ±180° 拆两盒）；oracle 增 E 区 15 用例 + 密采样自检
+
 ## [0.4.0] — 2026-10-17
 ### Minor · R72
 - [自主进化] R72 新增 **geo_path**（多段航线总里程：逐段大圆距离/初始方位/罗盘点/累计里程 + 总里程、首末直连距离、绕行量 detourKm 与百分比、回环闭合距离；同点相邻段如实报 0 km 且**不给航向**——零长航段没有唯一朝向，`zeroLengthLegs` 列出行号；闭合环不给无意义的百分比）

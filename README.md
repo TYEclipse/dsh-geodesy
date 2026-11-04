@@ -1,8 +1,9 @@
 # dsh-geodesy
 
-Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals and spherical caps (coverage areas) — all as local, deterministic tools with **zero runtime dependencies**.
+Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals, spherical caps (coverage areas) and sphere-correct bounding boxes — all as local, deterministic tools with **zero runtime dependencies**.
 
-> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内、多段航线总里程与偏航/绕行量、球面圆（覆盖范围），共十一个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈、把球面覆盖范围当平面圆算等）。
+> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内、多段航线总里程与偏航/绕行量、球面圆（覆盖范围）、球面安全的包围盒，共十二个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈、把球面覆盖范围当平面圆算、用航点最大最小值当航线包围盒等）。
+
 
 ## Why
 
@@ -19,6 +20,7 @@ LLMs reliably fumble geodesic math: they mix up latitude/longitude order, use th
 - `geo_point_in_polygon` — is a coordinate inside a spherical polygon? Reports both sides of the boundary (the enclosed region and the region left of the directed edges), boundary hits, and the area of the region the point falls in
 - `geo_path` — totals a multi-leg route: each leg's length, heading (bearing + compass point) and running total, plus the route total, the straight-line distance between the endpoints, the detour and the distance back to the start
 - `geo_circle` — a spherical cap ("everything within r of a point"): its area and share of the sphere, its boundary circle's length, whether that boundary is a great circle, the latitude/longitude box it occupies (pole and antimeridian cases included), and whether a given point is inside it
+- `geo_bbox` — bounding box of coordinates or of a route: the box around the waypoints, or the box around the great-circle arcs between them (which reach latitudes no waypoint has), with a pole inside reported as *all* longitudes and a box that wraps the antimeridian returned as two boxes instead of a reversed min/max pair
 
 All math uses the IUGG mean Earth radius 6371.0088 km (configurable via the plugin `radiusKm` option, e.g. for lunar or planetary calculations).
 
@@ -46,6 +48,8 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 - "This 0.2° box sits at the antimeridian — is (0, 0) inside it?" (the antipode trap: a naive angle-sum test says yes, it is not)
 - "How long is the route London → Paris → Rome, and how much longer is it than flying straight there?"
 - "Everything within 300 km of Beijing — what area is that, and where does its edge run?"
+- "What bounding box should I query for the route Beijing → Shanghai → Hong Kong?" (and: "does that route ever go above 45°N?" — the arcs answer differently from the waypoints)
+- "This Pacific route runs from 170°E to 170°W — give me the boxes a map query needs."
 
 ### Examples
 
@@ -176,6 +180,35 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 }
 ```
 
+`geo_bbox` — the same two coordinates read as a **route** (40°N at 0° and 40°N at 120°). The waypoints never leave 40°N, but the great-circle arc between them climbs to 59.2°N, so the route box is 19.2° taller than the waypoints and the arcs reach 2136 km beyond them:
+
+```json
+{
+  "valid": true,
+  "shape": "path",
+  "boxes": [
+    {
+      "minLat": 40,
+      "maxLat": 59.210267,
+      "minLon": 0,
+      "maxLon": 120
+    }
+  ],
+  "minLat": 40,
+  "maxLat": 59.210267,
+  "lonSpanDeg": 120,
+  "crossesAntimeridian": false,
+  "coversAllLongitudes": false,
+  "includesNorthPole": false,
+  "includesSouthPole": false,
+  "vertices": 2,
+  "legs": 1,
+  "bulgeKm": 2136.087177
+}
+```
+
+Pass the same coordinates as `points` instead of `path` and the box is 40°–40°: the two answers are different on purpose, because "the box of these coordinates" and "the box a map needs for this route" are different questions.
+
 `geo_distance` — Beijing (39.9042, 116.4074) → Shanghai (31.2304, 121.4737):
 
 ```json
@@ -207,6 +240,12 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
   - A cap that reaches a pole **contains** it: `includesNorthPole`/`includesSouthPole` are set, `coversAllLongitudes` is true, and `minLon`/`maxLon` are reported as the full range (the cap is not a rectangle). A cap that straddles the antimeridian has a box that wraps: `crossesAntimeridian` is true and `minLon` is **east** of `maxLon` (join them through ±180°); `lonSpanDeg` always holds the true angular width.
   - A radius of half the circumference or more covers the whole sphere (`coversWholeSphere`, area = `4πR²`, `boundaryKm` = 0).
   - `containsPoint`/`pointOnBoundary` are decided by great-circle distance, never by the box — a box test would misjudge points near the box corners. "On the boundary" means within ~6 mm of the circle; a point placed there counts as neither inside nor outside. Note that tool coordinates are rounded to 1e-6 degrees (~11 cm of arc), which is **coarser** than that tolerance, so do not expect a rounded coordinate to be recognized as exactly on the edge.
+- **`geo_bbox`** is a box on a sphere, which is where naive code goes wrong in three ways:
+  - **A route box is not a waypoint box.** `shape: "path"` includes the great-circle arcs, so the latitude range can exceed every waypoint's: 40°N at 0° → 40°N at 120° peaks at 59.2°N, and `bulgeKm` is how far the arcs reach beyond the waypoint extremes (0 when the waypoints already are the extremes). Pass `points` (vertices only) only when that is really the question — the note says so.
+  - **A pole inside the box means every longitude.** `coversAllLongitudes` is then true and `boxes[0]` is the full range; a route that runs over a pole (80°N 0° → 80°N 180°) is the standard example, and its `maxLat` is exactly 90.
+  - **A box that wraps ±180° needs two boxes.** `boxes` holds two entries (`crossesAntimeridian: true`), each with `minLon < maxLon`, so 170°E → 170°W is `[170, 180]` plus `[-180, -170]` — 20° wide, not a reversed pair that reads as 340° or as a broken range. `lonSpanDeg` is always the true angular width.
+  - The minimal longitude interval is the one you get by cutting the longitude circle at its largest gap, so a scattered point set does not get a 300°-wide box just because two points happen to be near ±180°.
+  - A point set is a set: order does not matter. A route's legs are the arcs **between consecutive** waypoints, so order does. A zero-length leg is ignored; an antipodal leg is an error (its great circle is not unique), not a guess.
 - **`geo_intersection`** reports the crossing nearest to the first path's start; when that crossing lies on the reverse side of path 1 (bearing from start 1 differs by ~180°), a `note` says so and the antipodal crossing is the one ahead.
 - **`geo_rhumb`** returns bearing 0 for zero-length lines (no unique heading exists).
 
@@ -240,6 +279,7 @@ Invalid input returns `valid: false` with a reason — never a silent guess.
 | `geo_point_in_polygon` | inside/outside test for a spherical polygon (both sides, boundary hits, region area) |
 | `geo_path` | multi-leg route totals: per-leg distance/heading/running total, detour vs the straight line |
 | `geo_circle` | spherical cap: area, boundary circle length, lat/lon box (poles & antimeridian), containment |
+| `geo_bbox` | bounding box of points or of a route (arcs included), pole and antimeridian cases as two boxes |
 
 ## Configuration
 
@@ -254,7 +294,7 @@ plugins:
 ```sh
 pnpm install
 pnpm build
-pnpm test     # 223 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
+pnpm test     # 243 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
 pnpm lint
 ```
 

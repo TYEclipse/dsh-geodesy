@@ -193,10 +193,11 @@ describe('coord_parse', () => {
 })
 
 describe('tool surface', () => {
-  it('exposes exactly eleven tools with stable names', () => {
+  it('exposes exactly twelve tools with stable names', () => {
     expect(Object.keys(tools).sort()).toEqual([
       'coord_parse',
       'geo_area',
+      'geo_bbox',
       'geo_bearing',
       'geo_circle',
       'geo_cross_track',

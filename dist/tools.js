@@ -11,6 +11,7 @@ import { rhumbBearing, rhumbDistanceKm } from "./rhumb.js";
 import { greatCircleIntersection } from "./intersection.js";
 import { sphericalPolygonArea } from "./area.js";
 import { sphericalCap } from "./cap.js";
+import { sphericalBBox } from "./bbox.js";
 import { crossTrack, polylinePath } from "./path.js";
 import { pointInPolygon } from "./region.js";
 import { parseCoordInput } from "./coords.js";
@@ -143,7 +144,29 @@ function renderCircle(value) {
         text += ` — ${result.note}`;
     return text;
 }
-/** Build all eleven tool definitions from the resolved config. */
+function renderBBox(value) {
+    const result = value;
+    if (!result.valid)
+        return `invalid input: ${result.reason ?? 'unknown error'}`;
+    const what = result.shape === 'path'
+        ? `route (${result.vertices} waypoints, ${result.legs} ${result.legs === 1 ? 'leg' : 'legs'}, arcs included)`
+        : `point set (${result.vertices} vertices only)`;
+    let text = `bounding box of this ${what}: latitude ${result.minLat}° to ${result.maxLat}°`;
+    const boxes = result.boxes ?? [];
+    text += result.coversAllLongitudes
+        ? ', every longitude'
+        : `, longitude ${boxes[0]?.minLon}° to ${boxes[0]?.maxLon}° (width ${result.lonSpanDeg}°)`;
+    if (boxes.length > 1) {
+        const parts = boxes.map((box) => `lat ${box.minLat}°..${box.maxLat}°, lon ${box.minLon}°..${box.maxLon}°`);
+        text += ` — it wraps the antimeridian, so it takes two boxes: ${parts.join(' and ')}`;
+    }
+    if (result.bulgeKm !== undefined && result.bulgeKm > 0) {
+        text += ` — the arcs reach ${result.bulgeKm} km further from the equator than any waypoint`;
+    }
+    if (result.note !== undefined)
+        text += ` — ${result.note}`;
+    return text;
+}
 export function buildGeodesyTools(config) {
     const radiusKm = config.radiusKm;
     const maxDistanceKm = Math.PI * radiusKm;
@@ -938,6 +961,131 @@ export function buildGeodesyTools(config) {
             return result;
         },
     });
+    const geo_bbox = defineTool({
+        name: 'geo_bbox',
+        description: 'Bounding box of coordinates or of a route on a sphere — the box a map query actually needs, '
+            + 'with the three cases a naive min/max over latitude and longitude gets wrong. Pass `points` for the box '
+            + 'around the given coordinates, or `path` for the box around a route — and that box includes the '
+            + `great-circle arcs between waypoints, which can reach latitudes no waypoint has (a 40°N → 40°N route across `
+            + `120° of longitude reaches 59.2°N — over 2100 km further from the equator than either end). A box that `
+            + 'contains a pole spans every longitude (`coversAllLongitudes`, all longitudes are then really inside). A box '
+            + 'that straddles ±180° cannot be written as one min/max pair, so it is returned as two boxes in `boxes` '
+            + `(crossesAntimeridian: true) instead of a reversed pair. All latitudes/longitudes are degrees on a ${radiusKm} km sphere. `
+            + 'Use it for "what bounding box covers this route", "does this route go above 45°N", and "give me the '
+            + 'west/east boxes for a Pacific query". For the box of a circle use geo_circle, which reports the same fields.',
+        parameters: {
+            points: {
+                type: 'array',
+                description: 'Coordinates whose box you want — the box covers these vertices only, not the arcs between them '
+                    + '(2 to 50). Give exactly one of `points` or `path`.',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+                        lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+                    },
+                },
+            },
+            path: {
+                type: 'array',
+                description: 'Ordered route waypoints (2 to 50) — the box covers the great-circle arcs between consecutive '
+                    + 'waypoints. Give exactly one of `points` or `path`.',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+                        lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+                    },
+                },
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    shape: { type: 'string' },
+                    boxes: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                minLat: { type: 'number', required: true },
+                                maxLat: { type: 'number', required: true },
+                                minLon: { type: 'number', required: true },
+                                maxLon: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                    minLat: { type: 'number' },
+                    maxLat: { type: 'number' },
+                    lonSpanDeg: { type: 'number' },
+                    crossesAntimeridian: { type: 'boolean' },
+                    coversAllLongitudes: { type: 'boolean' },
+                    includesNorthPole: { type: 'boolean' },
+                    includesSouthPole: { type: 'boolean' },
+                    vertices: { type: 'number' },
+                    legs: { type: 'number' },
+                    bulgeKm: { type: 'number' },
+                    note: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderBBox(value) }],
+        },
+        async execute(args) {
+            const hasPoints = Array.isArray(args.points);
+            const hasPath = Array.isArray(args.path);
+            if (hasPoints === hasPath) {
+                return {
+                    valid: false,
+                    reason: 'give exactly one of points (vertices only) or path (a route whose arcs count) — '
+                        + 'they are different boxes, so the choice cannot be guessed',
+                };
+            }
+            const input = (hasPath ? args.path : args.points);
+            const outcome = sphericalBBox(hasPath ? 'path' : 'points', input, radiusKm);
+            if (outcome.error !== undefined)
+                return { valid: false, reason: outcome.error };
+            const info = outcome.result;
+            const result = {
+                valid: true,
+                shape: info.shape,
+                boxes: info.boxes.map((box) => ({
+                    minLat: round(box.minLat),
+                    maxLat: round(box.maxLat),
+                    minLon: round(box.minLon),
+                    maxLon: round(box.maxLon),
+                })),
+                minLat: round(info.minLat),
+                maxLat: round(info.maxLat),
+                lonSpanDeg: round(info.lonSpanDeg),
+                crossesAntimeridian: info.crossesAntimeridian,
+                coversAllLongitudes: info.coversAllLongitudes,
+                includesNorthPole: info.includesNorthPole,
+                includesSouthPole: info.includesSouthPole,
+                vertices: info.vertices,
+                legs: info.legs,
+            };
+            if (info.bulgeKm !== undefined)
+                result.bulgeKm = round(info.bulgeKm);
+            const notes = [];
+            if (info.shape === 'points') {
+                notes.push('this box covers the given coordinates only; the great-circle route between them can leave it — '
+                    + 'pass path instead for the arc-aware box');
+            }
+            if (info.coversAllLongitudes) {
+                notes.push('the box contains a pole, so it spans every longitude; minLon/maxLon are the full range');
+            }
+            if (notes.length > 0)
+                result.note = notes.join('; ');
+            return result;
+        },
+    });
     return {
         geo_distance,
         geo_bearing,
@@ -950,6 +1098,7 @@ export function buildGeodesyTools(config) {
         geo_point_in_polygon,
         geo_path,
         geo_circle,
+        geo_bbox,
     };
 }
 //# sourceMappingURL=tools.js.map

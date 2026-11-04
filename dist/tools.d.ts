@@ -19,6 +19,7 @@ export interface ToolSet {
     geo_point_in_polygon: ToolDefinition;
     geo_path: ToolDefinition;
     geo_circle: ToolDefinition;
+    geo_bbox: ToolDefinition;
 }
 /** Full output of geo_distance: success keys always present, `reason` only on failure. */
 export interface DistanceResult {
@@ -183,6 +184,30 @@ export interface CircleToolResult {
     note?: string;
     reason?: string;
 }
-/** Build all eleven tool definitions from the resolved config. */
+/** One latitude/longitude box, as reported to the agent. */
+export interface BBoxResultBox {
+    minLat: number;
+    maxLat: number;
+    minLon: number;
+    maxLon: number;
+}
+/** Full output of geo_bbox. */
+export interface BBoxToolResult {
+    valid: boolean;
+    shape?: string;
+    boxes?: BBoxResultBox[];
+    minLat?: number;
+    maxLat?: number;
+    lonSpanDeg?: number;
+    crossesAntimeridian?: boolean;
+    coversAllLongitudes?: boolean;
+    includesNorthPole?: boolean;
+    includesSouthPole?: boolean;
+    vertices?: number;
+    legs?: number;
+    bulgeKm?: number;
+    note?: string;
+    reason?: string;
+}
 export declare function buildGeodesyTools(config: ResolvedConfig): ToolSet;
 //# sourceMappingURL=tools.d.ts.map
