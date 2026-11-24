@@ -1,7 +1,7 @@
 /**
  * dsh-geodesy — geodesic math toolbox for DeepSeek Harness.
  *
- * Twelve pure-computation tools, zero runtime dependencies:
+ * Thirteen pure-computation tools, zero runtime dependencies:
  *   geo_distance       — great-circle distance with bearings and compass direction
  *   geo_bearing        — initial/final bearings + great-circle midpoint
  *   geo_destination    — direct problem: point at a bearing and distance
@@ -12,6 +12,7 @@
  *   geo_cross_track    — distance from a point to a great-circle path (off-track)
  *   geo_point_in_polygon — is this coordinate inside this spherical polygon?
  *   geo_path           — multi-leg route totals: per-leg distance/heading, detour vs direct
+ *   geo_along_path     — walk a route: the point at a given distance, the heading there, how much is left
  *   geo_circle         — spherical cap: area, boundary length, lat/lon box, containment
  *   geo_bbox           — bounding box of points or of a route (arcs, poles, antimeridian)
  *

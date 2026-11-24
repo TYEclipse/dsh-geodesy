@@ -104,4 +104,66 @@ export declare const POLYLINE_MAX_POINTS = 50;
  * caller (`straightKm === 0` means there is no percentage).
  */
 export declare function polylinePath(points: Point[], radiusKm?: number): PolylineOutcome;
+/** A distance this close to a waypoint *is* that waypoint (1 micrometre of arc). */
+export declare const ALONG_EPS_KM = 1e-9;
+/** Within this of a pole, the reached point is reported as the pole (1 metre). */
+export declare const POLE_TOL_KM = 0.001;
+/** Where you are after walking `distanceKm` along an ordered route. */
+export interface AlongPathInfo {
+    /** The point reached. */
+    point: Point;
+    /** 1-based index of the leg the point falls on. */
+    leg: number;
+    /** 0-based index of that leg's start waypoint. */
+    fromIndex: number;
+    /** 0-based index of that leg's end waypoint. */
+    toIndex: number;
+    /** Number of waypoints on the route. */
+    points: number;
+    /** Distance walked from the route start (km) — the request, clamped to the route length. */
+    alongKm: number;
+    /** Total route length (km). */
+    totalKm: number;
+    /** Distance from the reached point to the end of the route (km). */
+    remainingKm: number;
+    /** alongKm / totalKm; absent when the route has zero length (no fraction exists). */
+    fraction?: number;
+    /** Distance walked along the current leg (km). */
+    legAlongKm: number;
+    /** Length of the current leg (km). */
+    legLengthKm: number;
+    /** Distance still to walk on the current leg (km). */
+    legRemainingKm: number;
+    /** Course from the reached point down the leg still ahead, in degrees; absent at the route end and at a pole. */
+    bearing?: number;
+    /** Compass point for that course; absent with `bearing`. */
+    compass?: string;
+    /** True when the point is exactly a waypoint. */
+    atWaypoint: boolean;
+    /** 0-based index of that waypoint (only when `atWaypoint`). */
+    waypointIndex?: number;
+    /** True when the reached point is a pole (only when it is one). */
+    atPole?: boolean;
+}
+export interface AlongPathOutcome {
+    result?: AlongPathInfo;
+    error?: string;
+}
+/**
+ * The inverse of `polylinePath`: instead of totalling a route, walk it.
+ *
+ * A route bends at its waypoints, so the answer is *not* the direct problem
+ * from the origin — the point is found on the containing leg by interpolating
+ * its two endpoints on the great circle, and the remaining distance is the
+ * rest of that leg plus every leg after it.
+ *
+ * What is deliberately absent rather than guessed:
+ *   - a distance past the route end is an error (clamping would invent a
+ *     journey that did not happen);
+ *   - a route of zero total length has no fraction (`fraction` absent) and no
+ *     heading;
+ *   - at a pole the heading is omitted: longitude there is numerical noise,
+ *     and the forward-azimuth formula happily returns a course 180° off.
+ */
+export declare function alongPath(points: Point[], distanceKm: number, radiusKm?: number): AlongPathOutcome;
 //# sourceMappingURL=path.d.ts.map

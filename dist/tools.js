@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: eleven pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: thirteen pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -12,7 +12,7 @@ import { greatCircleIntersection } from "./intersection.js";
 import { sphericalPolygonArea } from "./area.js";
 import { sphericalCap } from "./cap.js";
 import { sphericalBBox } from "./bbox.js";
-import { crossTrack, polylinePath } from "./path.js";
+import { alongPath, crossTrack, polylinePath } from "./path.js";
 import { pointInPolygon } from "./region.js";
 import { parseCoordInput } from "./coords.js";
 function renderDistance(value) {
@@ -122,6 +122,32 @@ function renderPath(value) {
     text += result.closesLoop
         ? `; the path closes a loop (returns to its start)`
         : `; ${result.closureKm} km back to the start`;
+    if (result.note !== undefined)
+        text += ` — ${result.note}`;
+    return text;
+}
+function renderAlongPath(value) {
+    const result = value;
+    if (!result.valid)
+        return `invalid input: ${result.reason ?? 'unknown error'}`;
+    const legs = result.legs ?? 0;
+    let text = `${result.alongKm} km along this ${result.points}-waypoint route (${result.totalKm} km total): `;
+    text += result.atPole
+        ? `latitude ${result.lat} (a pole: no longitude)`
+        : `${result.lat}, ${result.lon} (${result.latDms}, ${result.lonDms})`;
+    text += ` — leg ${result.leg} of ${legs}, ${result.legAlongKm} km into a ${result.legLengthKm} km leg`;
+    if (result.fraction !== undefined)
+        text += `, ${round(result.fraction * 100, 3)}% of the route walked`;
+    if (result.atPole) {
+        text += ', no heading (every direction leaves a pole)';
+    }
+    else if (result.bearing !== undefined) {
+        text += `, heading ${result.bearing}° ${result.compass}`;
+    }
+    if (result.atWaypoint && result.waypointIndex !== undefined) {
+        text += `, exactly at waypoint ${result.waypointIndex + 1}`;
+    }
+    text += `; ${result.legRemainingKm} km left on this leg, ${result.remainingKm} km to the end of the route`;
     if (result.note !== undefined)
         text += ` — ${result.note}`;
     return text;
@@ -850,6 +876,124 @@ export function buildGeodesyTools(config) {
             return result;
         },
     });
+    const geo_along_path = defineTool({
+        name: 'geo_along_path',
+        description: 'Where am I after a given distance along a multi-leg route? Give an ordered list of {lat, lon} '
+            + 'waypoints (2 to 50) and a distance in km, and get the point reached, the course from that point down the '
+            + 'leg still ahead (bearing + compass point), which leg you are on, how far into it, and how much of the route '
+            + 'is left. This is the inverse of geo_path: geo_path totals a route, this walks it. The point is found on the '
+            + `actual leg between its two waypoints (all km on a ${radiusKm} km sphere), so a route that bends is walked as `
+            + 'it bends — the answer is not "the direct point from the start". A distance past the end of the route is an '
+            + 'error rather than a clamp: nothing invented. A distance that lands on a waypoint reports that waypoint '
+            + '(atWaypoint/waypointIndex) and the course of the leg leaving it. At a pole, bearing/compass are omitted — '
+            + 'longitude there is undefined, so any heading would be a guess. For total lengths use geo_path; use this for '
+            + '"where will I be after X km", "what is my heading at that point" and "how much further is left".',
+        parameters: {
+            points: {
+                type: 'array',
+                required: true,
+                description: 'Ordered route waypoints as {lat, lon} objects (at least 2, at most 50).',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        lat: { type: 'number', required: true, description: 'Latitude, -90 to 90.' },
+                        lon: { type: 'number', required: true, description: 'Longitude, -180 to 180.' },
+                    },
+                },
+            },
+            distanceKm: {
+                type: 'number',
+                required: true,
+                description: 'Distance to walk along the route, in km (0 to the route total). Past the end is an error.',
+            },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    lat: { type: 'number' },
+                    lon: { type: 'number' },
+                    latDms: { type: 'string' },
+                    lonDms: { type: 'string' },
+                    alongKm: { type: 'number' },
+                    totalKm: { type: 'number' },
+                    remainingKm: { type: 'number' },
+                    fraction: { type: 'number' },
+                    points: { type: 'number' },
+                    legs: { type: 'number' },
+                    leg: { type: 'number' },
+                    fromIndex: { type: 'number' },
+                    toIndex: { type: 'number' },
+                    legAlongKm: { type: 'number' },
+                    legLengthKm: { type: 'number' },
+                    legRemainingKm: { type: 'number' },
+                    bearing: { type: 'number' },
+                    compass: { type: 'string' },
+                    atWaypoint: { type: 'boolean' },
+                    waypointIndex: { type: 'number' },
+                    atPole: { type: 'boolean' },
+                    note: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderAlongPath(value) }],
+        },
+        async execute(args) {
+            if (!Array.isArray(args.points)) {
+                return { valid: false, reason: 'points must be an array of {lat, lon} objects' };
+            }
+            const outcome = alongPath(args.points, args.distanceKm, radiusKm);
+            if (outcome.error !== undefined)
+                return { valid: false, reason: outcome.error };
+            const info = outcome.result;
+            const result = {
+                valid: true,
+                lat: round(info.point.lat),
+                latDms: formatDms(info.point.lat, true),
+                alongKm: round(info.alongKm),
+                totalKm: round(info.totalKm),
+                remainingKm: round(info.remainingKm),
+                points: info.points,
+                legs: info.points - 1,
+                leg: info.leg,
+                fromIndex: info.fromIndex,
+                toIndex: info.toIndex,
+                legAlongKm: round(info.legAlongKm),
+                legLengthKm: round(info.legLengthKm),
+                legRemainingKm: round(info.legRemainingKm),
+                atWaypoint: info.atWaypoint,
+            };
+            if (info.fraction !== undefined)
+                result.fraction = round(info.fraction, 10);
+            if (info.bearing !== undefined) {
+                result.bearing = round(info.bearing);
+                result.compass = info.compass;
+            }
+            if (info.waypointIndex !== undefined)
+                result.waypointIndex = info.waypointIndex;
+            // A pole has no longitude: at a pole every longitude is the same point, so
+            // the computed value is floating-point noise. Report latitude only.
+            if (info.atPole) {
+                result.atPole = true;
+            }
+            else {
+                result.lon = round(info.point.lon);
+                result.lonDms = formatDms(info.point.lon, false);
+            }
+            const notes = [];
+            if (info.atPole) {
+                notes.push('the reached point is a pole (within 1 m of it), where longitude — and therefore any '
+                    + 'bearing — is undefined: bearing and compass are omitted, and the reported lat/lon is the computed '
+                    + 'point rather than a snapped one');
+            }
+            if (notes.length > 0)
+                result.note = notes.join('; ');
+            return result;
+        },
+    });
     const geo_circle = defineTool({
         name: 'geo_circle',
         description: 'Describe the area within a fixed distance of a point on a sphere (a spherical cap / "circle '
@@ -1097,6 +1241,7 @@ export function buildGeodesyTools(config) {
         geo_cross_track,
         geo_point_in_polygon,
         geo_path,
+        geo_along_path,
         geo_circle,
         geo_bbox,
     };

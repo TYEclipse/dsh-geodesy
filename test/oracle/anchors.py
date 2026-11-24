@@ -37,6 +37,8 @@ Sections (printed in this order by a bare run):
   B  v0.2 anchors — rhumb, path intersection, polygon area (JSON)
   C  v0.3 anchors — cross-track / along-track, point in polygon
   D  v0.4 anchors — multi-leg route totals, spherical cap
+  E  v0.5 anchors — bounding boxes of points and of routes
+  F  v0.6 anchors — walking a route (geo_along_path)
 
 Usage:
   python3 test/oracle/anchors.py            # print every anchor (human-readable)
@@ -54,6 +56,8 @@ R = 6371.0088  # IUGG mean Earth radius, km
 DEG = math.pi / 180.0
 BOUNDARY_TOL_RAD = 1e-9  # "on the boundary" tolerance: ~6 mm of arc
 BOUNDARY_TOL_KM = BOUNDARY_TOL_RAD * R
+ALONG_EPS_KM = 1e-9  # "this is a waypoint" tolerance: 1 micrometre of arc
+POLE_TOL_KM = 1e-3  # within this of a pole the point is "at the pole": 1 metre
 
 
 # ── generic closed forms (section A / C helpers) ──────────────────────────
@@ -582,6 +586,85 @@ def path_totals(points, radius=R):
         'maxLegKm': max(distances),
         'minLegKm': min(distances),
         'zeroLengthLegs': [leg['leg'] for leg in legs if leg['distanceKm'] < 1e-9],
+    }
+
+
+def along_path(points, distance_km, radius=R):
+    """Where you are after walking `distance_km` along an ordered route.
+
+    Independent construction: the point comes from the *direct problem*
+    (``destination(leg_start, initial_bearing(leg_start, leg_end), walked)``),
+    while ``src/path.ts`` interpolates the two leg endpoints on the great
+    circle with unit vectors. The heading here is read from the closed-form
+    forward azimuth at the reached point, not from the arc parameter. Two
+    different constructions of the same point, so a disagreement means one of
+    them is wrong instead of both sharing a mistake.
+
+    Distances within ``ALONG_EPS_KM`` of a waypoint are reported *as* that
+    waypoint (a point 1 micrometre into the next leg is the waypoint, and
+    pretending otherwise invents a heading out of rounding dust).
+    """
+    legs = path_legs(points, radius)
+    total = legs[-1]['cumulativeKm'] if legs else 0.0
+    if distance_km < 0.0:
+        raise ValueError(f'distance must be zero or positive (got {distance_km} km)')
+    if distance_km > total + ALONG_EPS_KM:
+        raise ValueError(f'the route is {total:.6f} km long, so {distance_km:.6f} km is beyond its end')
+    target = min(distance_km, total)
+    if total <= ALONG_EPS_KM:
+        return {
+            'point': (points[0][0], points[0][1]), 'leg': 1, 'fromIndex': 0, 'toIndex': 1,
+            'alongKm': 0.0, 'totalKm': 0.0, 'remainingKm': 0.0, 'fraction': None,
+            'legAlongKm': 0.0, 'legLengthKm': 0.0, 'legRemainingKm': 0.0,
+            'bearing': None, 'compass': None, 'atWaypoint': True, 'waypointIndex': 0,
+            'atPole': False,
+        }
+    containing = None
+    for candidate in legs:
+        if candidate['cumulativeKm'] >= target - ALONG_EPS_KM:
+            containing = candidate
+            break
+    if containing is None:
+        raise ValueError('internal: no leg contains the target distance')
+    leg_start_cum = containing['cumulativeKm'] - containing['distanceKm']
+    local = min(max(target - leg_start_cum, 0.0), containing['distanceKm'])
+    a = points[containing['fromIndex']]
+    b = points[containing['toIndex']]
+    at_waypoint = False
+    waypoint_index = None
+    if containing['distanceKm'] <= ALONG_EPS_KM or local <= ALONG_EPS_KM:
+        point, at_waypoint, waypoint_index = (a[0], a[1]), True, containing['fromIndex']
+    elif local >= containing['distanceKm'] - ALONG_EPS_KM:
+        point, at_waypoint, waypoint_index = (b[0], b[1]), True, containing['toIndex']
+    else:
+        point = destination(a, initial_bearing(a, b), local, radius)
+    # The heading is the course of the first leg that is still ahead of us. At a
+    # pole it is omitted: the longitude of a pole is numerical noise, so the
+    # forward-azimuth formula returns a course that can be 180 degrees off.
+    ahead = None
+    for candidate in legs:
+        if candidate['cumulativeKm'] > target + ALONG_EPS_KM:
+            ahead = candidate
+            break
+    at_pole = min(hav_km(point, (90.0, 0.0), radius), hav_km(point, (-90.0, 0.0), radius)) <= POLE_TOL_KM
+    bearing = None if (ahead is None or at_pole) else initial_bearing(point, points[ahead['toIndex']])
+    return {
+        'point': point,
+        'leg': containing['leg'],
+        'fromIndex': containing['fromIndex'],
+        'toIndex': containing['toIndex'],
+        'alongKm': target,
+        'totalKm': total,
+        'remainingKm': total - target,
+        'fraction': target / total,
+        'legAlongKm': local,
+        'legLengthKm': containing['distanceKm'],
+        'legRemainingKm': containing['distanceKm'] - local,
+        'bearing': bearing,
+        'compass': None if bearing is None else compass_name(bearing),
+        'atWaypoint': at_waypoint,
+        'waypointIndex': waypoint_index,
+        'atPole': at_pole,
     }
 
 
@@ -1118,6 +1201,66 @@ def print_section_e():
                       f"crosses_antimeridian={arc_crosses_antimeridian(a, b)}")
 
 
+# ── section F: v0.6 anchors (walking a route) ─────────────────────────────
+ALONG_CASES = [
+    ('walk_equator_3000', [(0.0, 0.0), (0.0, 30.0)], 3000.0,
+     'single equatorial leg, 3000 km in (a third of the way)'),
+    ('walk_equator_start', [(0.0, 0.0), (0.0, 10.0)], 0.0,
+     'distance zero: the route start itself'),
+    ('walk_equator_end', [(0.0, 0.0), (0.0, 10.0)], None,
+     'exactly the full route length: the last waypoint'),
+    ('walk_route_leg1', [(39.9042, 116.4074), (31.2304, 121.4737), (22.3193, 114.1694)], 500.0,
+     'Beijing -> Shanghai -> Hong Kong, 500 km into the first leg'),
+    ('walk_route_leg2', [(39.9042, 116.4074), (31.2304, 121.4737), (22.3193, 114.1694)], 1200.0,
+     'the same route, 1200 km in (second leg, after the Shanghai turn)'),
+    ('walk_route_late', [(39.9042, 116.4074), (31.2304, 121.4737), (22.3193, 114.1694)], 1500.0,
+     'the same route, 1500 km in'),
+    ('walk_pacific', [(0.0, 170.0), (0.0, -170.0)], 150.0,
+     'a route across the antimeridian, 150 km in'),
+    ('walk_over_pole', [(80.0, 0.0), (80.0, 180.0)], 10 * DEG * R,
+     'a route whose shortest path runs over the north pole, walked exactly to the pole'),
+    ('walk_zero_leg_first', [(0.0, 0.0), (0.0, 0.0), (0.0, 10.0)], 1000.0,
+     'a zero-length first leg is skipped, not walked'),
+    ('walk_at_waypoint', [(0.0, 0.0), (0.0, 10.0), (5.0, 20.0), (0.0, 30.0)],
+     hav_km((0.0, 0.0), (0.0, 10.0)),
+     'a distance that lands exactly on the second waypoint'),
+    ('walk_zigzag_mid', [(0.0, 0.0), (0.0, 10.0), (5.0, 20.0), (0.0, 30.0)], 1600.0,
+     'the same zig-zag, 1600 km in (inside the second leg)'),
+    ('walk_closed_loop', [(0.0, 0.0), (0.0, 10.0), (0.0, 20.0), (0.0, 0.0)], 1500.0,
+     'a closed loop walked 1500 km'),
+    ('walk_all_zero', [(10.0, 10.0), (10.0, 10.0)], 0.0,
+     'a route of zero total length: only a distance of 0 can be walked'),
+    ('walk_beyond_end', [(0.0, 0.0), (0.0, 10.0)], 2000.0,
+     'past the end of the route (an error, not a clamp)'),
+    ('walk_negative', [(0.0, 0.0), (0.0, 10.0)], -5.0,
+     'a negative distance (an error)'),
+]
+
+
+def print_section_f():
+    print('=== F: v0.6 anchors (geo_along_path) ===')
+    for tag, points, distance, note in ALONG_CASES:
+        total = path_totals(points)['rawTotalKm']
+        requested = total if distance is None else distance
+        print(f'\n[{tag}] {note}')
+        print(f'  points={points} requested_km={fmt(requested, 9)} total_km={fmt(total)}')
+        try:
+            info = along_path(points, requested)
+        except ValueError as error:
+            print(f'  error={error}')
+            continue
+        print(f"  lat={fmt(info['point'][0])} lon={fmt(info['point'][1])}")
+        print(f"  along_km={fmt(info['alongKm'])} remaining_km={fmt(info['remainingKm'])} "
+              f"fraction={'None' if info['fraction'] is None else fmt(info['fraction'], 10)}")
+        print(f"  leg={info['leg']} from={info['fromIndex']} to={info['toIndex']} "
+              f"leg_along_km={fmt(info['legAlongKm'])} leg_length_km={fmt(info['legLengthKm'])} "
+              f"leg_remaining_km={fmt(info['legRemainingKm'])}")
+        bearing = 'None' if info['bearing'] is None else fmt(info['bearing'])
+        compass = 'None' if info['compass'] is None else info['compass']
+        print(f"  bearing={bearing} compass={compass} at_waypoint={info['atWaypoint']} "
+              f"waypoint_index={info['waypointIndex']} at_pole={info['atPole']}")
+
+
 def arc_samples(a, b, count=20001):
     """Evenly spaced points along the arc a->b (dense-sampling cross-check)."""
     return [slerp(a, b, index / (count - 1)) for index in range(count)]
@@ -1338,6 +1481,101 @@ def self_check():
     except ValueError:
         check('bbox: an antipodal leg is rejected', True)
 
+    # 9. Walking a route: the reported point really is that far along ---------
+    for tag, points, distance, _ in ALONG_CASES:
+        total = path_totals(points)['rawTotalKm']
+        requested = total if distance is None else distance
+        if requested < 0.0 or requested > total + ALONG_EPS_KM:
+            try:
+                along_path(points, requested)
+                check(f'along[{tag}]: an impossible distance is rejected', False)
+            except ValueError:
+                check(f'along[{tag}]: an impossible distance is rejected', True)
+            continue
+        info = along_path(points, requested)
+        leg_start = points[info['fromIndex']]
+        leg_end = points[info['toIndex']]
+        # Landing on a pole is genuinely ill-conditioned: the direct formula
+        # asks asin() for the latitude of a point whose z-component is 1 − 1e-16,
+        # and d(asin)/dx diverges there (~8e-7° of latitude, i.e. centimetres of
+        # arc, for one ulp). So near a pole the distance check gets a metre, and
+        # what has to hold is "the point really is the pole".
+        near_pole = abs(info['point'][0]) > 89.99
+        tol_km = 1e-3 if near_pole else 1e-6
+        if near_pole:
+            check(f'along[{tag}]: the point is the pole itself', abs(abs(info['point'][0]) - 90.0) < 1e-5,
+                  f'latitude {info["point"][0]!r}')
+        # (a) the point is exactly `legAlongKm` from its own leg start — the one
+        #     distance that is measurable directly, because a route bends at its
+        #     waypoints and a straight line from the origin need not equal it.
+        close(f'along[{tag}]: the point is legAlongKm from its leg start',
+              hav_km(leg_start, info['point']), info['legAlongKm'], tol_km)
+        # (b) along + remaining is the route total
+        close(f'along[{tag}]: along + remaining = total',
+              info['alongKm'] + info['remainingKm'], info['totalKm'], 1e-9)
+        # (c) the fraction is along/total (and genuinely absent for a zero route)
+        if info['fraction'] is None:
+            check(f'along[{tag}]: a zero-length route reports no fraction', info['totalKm'] <= ALONG_EPS_KM)
+        else:
+            close(f'along[{tag}]: fraction = along / total',
+                  info['fraction'] * info['totalKm'], info['alongKm'], 1e-6)
+        # (d) walking a waypoint is that waypoint, coordinates inside out
+        if info['atWaypoint']:
+            expected = points[cast(int, info['waypointIndex'])]
+            close(f'along[{tag}]: a waypoint landing is reported at that waypoint',
+                  hav_km(info['point'], expected), 0.0, 1e-9)
+        # (e) the heading is the course towards the leg still ahead — except at a
+        #     pole, where longitude (and therefore any bearing) is undefined.
+        if info['atPole']:
+            check(f'along[{tag}]: a pole landing reports no heading', info['bearing'] is None
+                  and info['compass'] is None)
+        if info['bearing'] is not None:
+            ahead = [leg for leg in path_legs(points) if leg['cumulativeKm'] > requested + ALONG_EPS_KM]
+            if ahead:
+                expected_bearing = initial_bearing(info['point'], points[ahead[0]['toIndex']])
+                close(f'along[{tag}]: the heading points down the leg still ahead',
+                      info['bearing'], expected_bearing, 1e-9)
+        # (f) second construction of the same point: unit-vector slerp of the
+        #     containing leg (the TypeScript implementation's method) versus the
+        #     direct-problem point used above.
+        if not info['atWaypoint'] and info['legLengthKm'] > ALONG_EPS_KM:
+            u = info['legAlongKm'] / info['legLengthKm']
+            other = slerp(leg_start, leg_end, u)
+            close(f'along[{tag}]: the direct-formula point agrees with the slerp point',
+                  hav_km(info['point'], other), 0.0, tol_km)
+        check(f'along[{tag}]: at_waypoint and waypoint_index are consistent',
+              (not info['atWaypoint']) or info['waypointIndex'] is not None)
+
+    start_info = along_path([(0.0, 0.0), (0.0, 10.0)], 0.0)
+    check('along: distance 0 is the route start, on the first leg',
+          start_info['atWaypoint'] and start_info['waypointIndex'] == 0 and start_info['alongKm'] == 0.0)
+    close('along: at the start the heading is the first leg bearing', start_info['bearing'], 90.0, 1e-9)
+    end_info = along_path([(0.0, 0.0), (0.0, 10.0)], hav_km((0.0, 0.0), (0.0, 10.0)))
+    check('along: the full length is the last waypoint', end_info['atWaypoint'] and end_info['waypointIndex'] == 1)
+    check('along: there is no heading past the end of the route', end_info['bearing'] is None
+          and end_info['compass'] is None)
+    close('along: at the end nothing remains to walk', end_info['remainingKm'], 0.0, 1e-9)
+    skipped = along_path([(0.0, 0.0), (0.0, 0.0), (0.0, 10.0)], 1000.0)
+    direct = along_path([(0.0, 0.0), (0.0, 10.0)], 1000.0)
+    close('along: a leading zero-length leg does not move the point',
+          hav_km(skipped['point'], direct['point']), 0.0, 1e-9)
+    check('along: the zero-length leg is skipped, so the point is on the real leg',
+          skipped['leg'] == 2 and skipped['fromIndex'] == 1)
+    try:
+        along_path([(0.0, 0.0), (0.0, 10.0)], hav_km((0.0, 0.0), (0.0, 10.0)) + 1.0)
+        check('along: walking past the end of the route is rejected, not clamped', False)
+    except ValueError:
+        check('along: walking past the end of the route is rejected, not clamped', True)
+    zero = along_path([(10.0, 10.0), (10.0, 10.0)], 0.0)
+    check('along: a zero-length route is the single waypoint with no heading',
+          zero['totalKm'] == 0.0 and zero['fraction'] is None and zero['bearing'] is None
+          and zero['atWaypoint'] and zero['point'] == (10.0, 10.0))
+    try:
+        along_path([(10.0, 10.0), (10.0, 10.0)], 1.0)
+        check('along: a zero-length route rejects a positive distance', False)
+    except ValueError:
+        check('along: a zero-length route rejects a positive distance', True)
+
     if failures:
         print('SELF-CHECK FAILED:', file=sys.stderr)
         for line in failures:
@@ -1363,6 +1601,8 @@ def main(argv=None):
     print_section_d()
     print()
     print_section_e()
+    print()
+    print_section_f()
     return 0
 
 

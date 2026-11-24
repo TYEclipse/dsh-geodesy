@@ -1,8 +1,8 @@
 # dsh-geodesy
 
-Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals, spherical caps (coverage areas) and sphere-correct bounding boxes — all as local, deterministic tools with **zero runtime dependencies**.
+Geodesic math toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): great-circle distances, bearings, destination points, DMS parsing, rhumb lines, path intersections, spherical polygon areas, off-track (cross-track) distances, point-in-polygon tests, multi-leg route totals, walking a route to a given distance, spherical caps (coverage areas) and sphere-correct bounding boxes — all as local, deterministic tools with **zero runtime dependencies**.
 
-> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内、多段航线总里程与偏航/绕行量、球面圆（覆盖范围）、球面安全的包围盒，共十二个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈、把球面覆盖范围当平面圆算、用航点最大最小值当航线包围盒等）。
+> 中文简介：dsh 插件「大地测量工具箱」——大圆距离、方位角、目的地推算、DMS 坐标解析、恒向线（罗盘等角航线）距离、两条大圆路径交点、球面多边形面积、点到路径的偏航距离（cross-track）、点是否在球面多边形内、多段航线总里程与偏航/绕行量、沿航线走固定距离后的位置与航向、球面圆（覆盖范围）、球面安全的包围盒，共十三个纯计算工具，零运行时依赖。专治大模型手算球面几何的常见错误（弧度与角度混用、经纬度顺序颠倒、忘记地球半径、把球面多边形当平面算、反算偏航距离时把「最近点」与「垂足」混为一谈、把航线当直线算「走到第 X 公里在哪」、把球面覆盖范围当平面圆算、用航点最大最小值当航线包围盒等）。
 
 
 ## Why
@@ -19,6 +19,7 @@ LLMs reliably fumble geodesic math: they mix up latitude/longitude order, use th
 - `geo_cross_track` — how far a point is off a great-circle path: signed cross-track distance, along-track distance to the perpendicular foot, the foot's coordinates, whether the foot is between the path endpoints, and the distance to the nearest point of the segment
 - `geo_point_in_polygon` — is a coordinate inside a spherical polygon? Reports both sides of the boundary (the enclosed region and the region left of the directed edges), boundary hits, and the area of the region the point falls in
 - `geo_path` — totals a multi-leg route: each leg's length, heading (bearing + compass point) and running total, plus the route total, the straight-line distance between the endpoints, the detour and the distance back to the start
+- `geo_along_path` — the inverse of `geo_path`: walk a route, not total it. Give an ordered route and a distance, and get the point you reach (found on the actual leg between its two waypoints), the course from there down the leg still ahead, which leg you are on and how far into it, the fraction of the route walked and the distance left. A distance past the end is an error, not a clamp; a landing on a waypoint is reported as that waypoint; at a pole the heading is omitted rather than guessed
 - `geo_circle` — a spherical cap ("everything within r of a point"): its area and share of the sphere, its boundary circle's length, whether that boundary is a great circle, the latitude/longitude box it occupies (pole and antimeridian cases included), and whether a given point is inside it
 - `geo_bbox` — bounding box of coordinates or of a route: the box around the waypoints, or the box around the great-circle arcs between them (which reach latitudes no waypoint has), with a pole inside reported as *all* longitudes and a box that wraps the antimeridian returned as two boxes instead of a reversed min/max pair
 
@@ -47,6 +48,8 @@ Ask the agent questions that involve Earth-surface math; it will call the tools 
 - "Is (45, 45) inside the spherical triangle (0,0), (0,90), (90,0)?"
 - "This 0.2° box sits at the antimeridian — is (0, 0) inside it?" (the antipode trap: a naive angle-sum test says yes, it is not)
 - "How long is the route London → Paris → Rome, and how much longer is it than flying straight there?"
+- "I'm 1200 km into the Beijing → Shanghai → Hong Kong route — where am I and what heading am I on?"
+- "Where do I cross the halfway point of this Pacific route, and how far is left after that?"
 - "Everything within 300 km of Beijing — what area is that, and where does its edge run?"
 - "What bounding box should I query for the route Beijing → Shanghai → Hong Kong?" (and: "does that route ever go above 45°N?" — the arcs answer differently from the waypoints)
 - "This Pacific route runs from 170°E to 170°W — give me the boxes a map query needs."
@@ -225,6 +228,33 @@ Pass the same coordinates as `points` instead of `path` and the box is 40°–40
 }
 ```
 
+`geo_along_path` — 1200 km into Beijing (39.9042, 116.4074) → Shanghai (31.2304, 121.4737) → Hong Kong (22.3193, 114.1694). The route is 2294.3 km, so 1200 km lands 132.7 km into the **second** leg, just past the Shanghai turn:
+
+```json
+{
+  "valid": true,
+  "lat": 30.28617,
+  "lon": 120.624597,
+  "latDms": "30°17′10.2″N",
+  "lonDms": "120°37′28.5″E",
+  "alongKm": 1200,
+  "totalKm": 2294.343754,
+  "remainingKm": 1094.343754,
+  "points": 3,
+  "legs": 2,
+  "leg": 2,
+  "fromIndex": 1,
+  "toIndex": 2,
+  "legAlongKm": 132.688355,
+  "legLengthKm": 1227.032109,
+  "legRemainingKm": 1094.343754,
+  "fraction": 0.5230253739,
+  "bearing": 217.479044,
+  "compass": "SW",
+  "atWaypoint": false
+}
+```
+
 ## Semantics notes
 
 - **`geo_area` winding**: the reported area is the region to the LEFT of the directed edges. Counter-clockwise vertex order (seen from outside the sphere) yields the polygon itself; clockwise order yields its complement. `complementKm2` is always included, so either region is one field away. The polygon must be simple (non-self-intersecting); at most 100 vertices.
@@ -234,6 +264,13 @@ Pass the same coordinates as `points` instead of `path` and the box is 40°–40
   - Points within ~6 mm of an edge (floating-point tolerance) are `onBoundary: true` and in neither region. The method is a signed great-circle ray-crossing winding, which — unlike the popular "sum the angles at the query point" shortcut — does not report points near a polygon's antipode as inside.
 - **`geo_cross_track`** sign conventions: `crossTrackKm` is positive when the query point is to the LEFT of the direction of travel (right-hand rule, seen from outside the sphere); `alongTrackKm` is positive when the perpendicular foot lies ahead of the path start and negative when it lies behind. When the foot falls outside the segment, `withinSegment: false` and `distanceToSegmentKm` is the distance to the nearer endpoint — not the perpendicular distance (a `note` says so). A point exactly 90° off the path has no unique foot and is reported as an error.
 - **`geo_path`**: the legs are great-circle arcs, so the route total is the sum of the leg lengths and the detour (`detourKm` = total − straight line) is never negative — it is zero only when every waypoint lies on the single great circle through the endpoints. `detourKm` is the difference of the two **reported** totals (each rounded to 6 decimals), so it can be checked by hand against them. A leg joining two identical waypoints is reported as 0 km with **no** `initialBearing`/`compass` (a zero-length great circle has no heading — inventing 0° would be a silent wrong answer) and its leg number is listed in `zeroLengthLegs`. When the last waypoint equals the first, `closesLoop` is true, the straight-line distance is 0 and no `detourPercent` is reported.
+- **`geo_along_path`** walks a route instead of totalling it, and it is the leg-wise answer, not the direct one:
+  - The point lies on the **actual leg** between its two waypoints, so 1200 km into Beijing → Shanghai → Hong Kong is on the second leg (132.7 km past the Shanghai turn), not somewhere on the straight line from Beijing. `leg`, `fromIndex`/`toIndex`, `legAlongKm`, `legLengthKm` and `legRemainingKm` say exactly where.
+  - `remainingKm` is `totalKm − alongKm` (the rest of this leg plus every leg after it), and `fraction` is the share of the route walked. A route whose total length is 0 has **no** `fraction` (0/0 is not a number) and no heading.
+  - `bearing`/`compass` are the course from the reached point down the leg still ahead — at a waypoint that is the course of the leg *leaving* it. At the end of the route there is nothing ahead, so both fields are **absent**.
+  - A distance within 1 µm of a waypoint is reported **as** that waypoint (`atWaypoint`, `waypointIndex`): a point a fraction of a micron into the next leg is the waypoint, and giving it the next leg's heading would turn rounding dust into information.
+  - A distance past the end is an **error**, never a clamp: clamping would describe a journey that did not happen. Zero-length legs (identical consecutive waypoints) are skipped, not walked.
+  - Reaching a pole is reported as `atPole: true` with `latitude` only (a pole has no longitude) and **no** `bearing`/`compass`: at a pole the forward-azimuth formula returns a course 180° off, because the longitude it reads is floating-point noise. Below the pole threshold the point is the computed one, not a snapped one.
 - **`geo_circle`** describes a spherical cap, not a flat disc:
   - `areaKm2` is the exact cap area `2πR²(1 − cos d)` and `surfaceFraction` its share of the whole sphere; the planar approximation `πr²` only holds for tiny caps (at r = 1000 km it overshoots the true area by 0.21%).
   - The latitude box is `centre ± d`; `boundaryIsGreatCircle` is true only when the radius is exactly a quarter of the circumference (d = 90°), where the cap is a hemisphere.
@@ -278,6 +315,7 @@ Invalid input returns `valid: false` with a reason — never a silent guess.
 | `geo_cross_track` | off-track distance to a great-circle path: signed cross-track + along-track, foot, segment distance |
 | `geo_point_in_polygon` | inside/outside test for a spherical polygon (both sides, boundary hits, region area) |
 | `geo_path` | multi-leg route totals: per-leg distance/heading/running total, detour vs the straight line |
+| `geo_along_path` | walk a route to a distance: the point, the heading there, the leg index, the fraction walked and what is left |
 | `geo_circle` | spherical cap: area, boundary circle length, lat/lon box (poles & antimeridian), containment |
 | `geo_bbox` | bounding box of points or of a route (arcs included), pole and antimeridian cases as two boxes |
 
@@ -294,7 +332,7 @@ plugins:
 ```sh
 pnpm install
 pnpm build
-pnpm test     # 243 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
+pnpm test     # 267 tests, anchored to independently computed closed-form values (test/oracle/anchors.py)
 pnpm lint
 ```
 

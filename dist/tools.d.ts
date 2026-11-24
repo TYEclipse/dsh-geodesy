@@ -1,5 +1,5 @@
 /**
- * Tool definitions for dsh-geodesy: eleven pure-math tools exposed to every
+ * Tool definitions for dsh-geodesy: thirteen pure-math tools exposed to every
  * agent via defineTool. Each tool has a strict JSON-schema parameter
  * surface and a compact text renderer. No network I/O happens anywhere.
  *
@@ -18,6 +18,7 @@ export interface ToolSet {
     geo_cross_track: ToolDefinition;
     geo_point_in_polygon: ToolDefinition;
     geo_path: ToolDefinition;
+    geo_along_path: ToolDefinition;
     geo_circle: ToolDefinition;
     geo_bbox: ToolDefinition;
 }
@@ -157,6 +158,33 @@ export interface PathToolResult {
     maxLegKm?: number;
     minLegKm?: number;
     zeroLengthLegs?: number[];
+    note?: string;
+    reason?: string;
+}
+/** Full output of geo_along_path. */
+export interface AlongPathToolResult {
+    valid: boolean;
+    lat?: number;
+    lon?: number;
+    latDms?: string;
+    lonDms?: string;
+    alongKm?: number;
+    totalKm?: number;
+    remainingKm?: number;
+    fraction?: number;
+    points?: number;
+    legs?: number;
+    leg?: number;
+    fromIndex?: number;
+    toIndex?: number;
+    legAlongKm?: number;
+    legLengthKm?: number;
+    legRemainingKm?: number;
+    bearing?: number;
+    compass?: string;
+    atWaypoint?: boolean;
+    waypointIndex?: number;
+    atPole?: boolean;
     note?: string;
     reason?: string;
 }
